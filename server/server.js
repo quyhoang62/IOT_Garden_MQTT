@@ -60,6 +60,7 @@ const deviceRouter = require('./routes/deviceRouter')
  * Bao gồm: Đặt ngưỡng, bật/tắt tưới tự động
  */
 const thresholdRouter = require('./routes/thresholdRouter')
+const thresholdController = require('./controllers/thresholdController');
 
 /**
  * scheduleRouter - Xử lý lịch tưới tự động
@@ -201,6 +202,13 @@ app.use('/api/v1/devices', deviceRouter);
  * - POST /api/v1/thresholds/:deviceId/toggle - Bật/tắt tưới tự động
  */
 app.use('/api/v1/thresholds', thresholdRouter);
+
+/**
+ * Convenience endpoint: POST /api/update-config
+ * Body: { deviceId, min_soil, max_soil, max_temp, duration }
+ * This endpoint accepts deviceId as either internal device_ID or device_MQTT_ID
+ */
+app.post('/api/update-config', thresholdController.updateConfig);
 
 /**
  * Mount scheduleRouter tại /api/v1/schedules

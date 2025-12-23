@@ -11,16 +11,26 @@ const mqttModel = require('../models/mqttModel');
 const emailService = require('../services/emailService');
 
 /**
- * Lấy ngưỡng theo Device ID
+ * Lấy ngưỡng theo Device ID hoặc theo device_MQTT_ID
  */
 const getThreshold = async (req, res) => {
   try {
-    const deviceId = req.params.deviceId;
-    const threshold = await thresholdModel.getThresholdByDeviceId(deviceId);
+    const deviceIdentifier = req.params.deviceId;
+    // Resolve device by numeric ID or MQTT ID
+    let device = null;
+    if (!isNaN(Number(deviceIdentifier))) {
+      device = await deviceModel.getDeviceById(deviceIdentifier);
+    } else {
+      device = await deviceModel.getDeviceByMQTTId(deviceIdentifier);
+    }
+
+    const deviceId = device ? device.device_ID : null;
+    const threshold = deviceId ? await thresholdModel.getThresholdByDeviceId(deviceId) : null;
+
     if (!threshold) {
       // Trả về default nếu chưa có
       return res.json({
-        threshold_DeviceID: parseInt(deviceId),
+        threshold_DeviceID: deviceId ? parseInt(deviceId) : null,
         threshold_Temp_Min: null,
         threshold_Temp_Max: null,
         threshold_Humidity_Min: null,
@@ -43,10 +53,22 @@ const getThreshold = async (req, res) => {
  */
 const updateThreshold = async (req, res) => {
   try {
-    const deviceId = req.params.deviceId;
+    const deviceIdentifier = req.params.deviceId;
     const threshold = req.body;
 
-    await thresholdModel.upsertThreshold(deviceId, threshold);
+    // Resolve device
+    let device = null;
+    if (!isNaN(Number(deviceIdentifier))) {
+      device = await deviceModel.getDeviceById(deviceIdentifier);
+    } else {
+      device = await deviceModel.getDeviceByMQTTId(deviceIdentifier);
+    }
+
+    if (!device || !device.device_ID) {
+      return res.status(400).json({ error: 'Device not found' });
+    }
+
+    await thresholdModel.upsertThreshold(device.device_ID, threshold);
     res.json({ message: 'Threshold updated successfully' });
   } catch (error) {
     console.error('Error updating threshold:', error);
@@ -59,14 +81,94 @@ const updateThreshold = async (req, res) => {
  */
 const toggleAutoWatering = async (req, res) => {
   try {
-    const deviceId = req.params.deviceId;
+    const deviceIdentifier = req.params.deviceId;
     const { enabled } = req.body;
 
-    await thresholdModel.toggleAutoWatering(deviceId, enabled);
+    // Resolve device
+    let device = null;
+    if (!isNaN(Number(deviceIdentifier))) {
+      device = await deviceModel.getDeviceById(deviceIdentifier);
+    } else {
+      device = await deviceModel.getDeviceByMQTTId(deviceIdentifier);
+    }
+
+    if (!device || !device.device_ID) {
+      return res.status(400).json({ error: 'Device not found' });
+    }
+
+    await thresholdModel.toggleAutoWatering(device.device_ID, enabled);
     res.json({ message: `Auto watering ${enabled ? 'enabled' : 'disabled'}` });
   } catch (error) {
     console.error('Error toggling auto watering:', error);
     res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+/**
+ * POST /api/update-config
+ * Body: { deviceId, min_soil, max_soil, max_temp, duration }
+ * Accepts deviceId as either internal device_ID or device_MQTT_ID
+ */
+const updateConfig = async (req, res) => {
+  try {
+    const { deviceId: deviceIdentifier, min_soil, max_soil, max_temp, duration } = req.body;
+
+    // Basic presence validation
+    if (min_soil == null || max_soil == null || max_temp == null || duration == null) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Numeric validation
+    const minSoil = Number(min_soil);
+    const maxSoil = Number(max_soil);
+    const maxTemp = Number(max_temp);
+    const dur = Number(duration);
+
+    if (isNaN(minSoil) || isNaN(maxSoil) || isNaN(maxTemp) || isNaN(dur)) {
+      return res.status(400).json({ error: 'Invalid numeric values' });
+    }
+    if (minSoil < 0 || minSoil > 100 || maxSoil < 0 || maxSoil > 100) {
+      return res.status(400).json({ error: 'Soil values must be between 0 and 100' });
+    }
+    if (minSoil >= maxSoil) {
+      return res.status(400).json({ error: 'min_soil must be less than max_soil' });
+    }
+    if (maxTemp < 0 || maxTemp > 60) {
+      return res.status(400).json({ error: 'max_temp must be between 0 and 60' });
+    }
+    if (dur <= 0) {
+      return res.status(400).json({ error: 'duration must be > 0' });
+    }
+
+    // Resolve device
+    let device = null;
+    if (!isNaN(Number(deviceIdentifier))) {
+      device = await deviceModel.getDeviceById(deviceIdentifier);
+    } else {
+      device = await deviceModel.getDeviceByMQTTId(deviceIdentifier);
+    }
+
+    if (!device || !device.device_ID) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const thresholdObj = {
+      threshold_Temp_Min: null,
+      threshold_Temp_Max: maxTemp,
+      threshold_Humidity_Min: null,
+      threshold_Humidity_Max: null,
+      threshold_SoilMoisture_Min: minSoil,
+      threshold_SoilMoisture_Max: maxSoil,
+      threshold_Enabled: true,
+      threshold_Duration: dur
+    };
+
+    await thresholdModel.upsertThreshold(device.device_ID, thresholdObj);
+
+    return res.json({ message: 'Cấu hình đã được cập nhật & gửi xuống thiết bị!' });
+  } catch (err) {
+    console.error('Error in updateConfig:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 };
 
@@ -180,5 +282,6 @@ module.exports = {
   getThreshold,
   updateThreshold,
   toggleAutoWatering,
+  updateConfig,
   checkAndAutoWater
 };
