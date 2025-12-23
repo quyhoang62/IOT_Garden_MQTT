@@ -1,0 +1,68 @@
+// * {
+//     box-sizing: border-box;
+// }
+
+.main-content {
+    display: flex;
+    background-color: white;
+
+    h1 {
+        color: #000000;
+    }
+}
+
+.routes-content {
+    width: 85vw;
+    box-sizing: border-box;
+}
+
+.control-container {
+    display: flex;
+    justify-Content: space-around;
+    width: 80vw;
+    margin: 0.5em;
+}
+
+
+.opa {
+    opacity: 0.7;
+    transition: 0.5s;
+
+    h1 {
+        font-size: 10px;
+
+    }
+
+
+}
+
+.opa img {
+    width: "10px",
+}
+
+.opa:hover {
+    opacity: 1;
+}
+
+/* This will change the scrollbar for the whole page */
+::-webkit-scrollbar {
+    width: 10px;
+    /* width of the entire scrollbar */
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    /* color of the tracking area */
+}
+
+::-webkit-scrollbar-thumb {
+    background: #888;
+    /* color of the scroll thumb */
+    border-radius: 20px;
+    /* roundness of the scroll thumb */
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+    /* color of the scroll thumb on hover */
+}
