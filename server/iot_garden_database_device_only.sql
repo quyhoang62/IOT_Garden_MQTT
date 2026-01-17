@@ -92,6 +92,7 @@ CREATE TABLE `tbl_watering_threshold` (
   `threshold_SoilMoisture_Max` int(11) DEFAULT NULL COMMENT 'Độ ẩm đất tối đa (%)',
   `threshold_Enabled` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'Bật/tắt tưới tự động',
   `threshold_Duration` int(11) NOT NULL DEFAULT 10 COMMENT 'Thời lượng tưới (giây)',
+  `threshold_Pump` varchar(10) NOT NULL DEFAULT 'V1' COMMENT 'Bơm sử dụng: V1, V2, hoặc ALL',
   `threshold_CreatedAt` timestamp NOT NULL DEFAULT current_timestamp(),
   `threshold_UpdatedAt` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`threshold_ID`),
@@ -135,23 +136,26 @@ CREATE TABLE `tbl_soil_moisture` (
 CREATE TABLE `tbl_water_pump` (
   `water_pump_ID` int(11) NOT NULL AUTO_INCREMENT,
   `water_pump_Time` timestamp NOT NULL DEFAULT current_timestamp(),
-  `water_pump_Value` varchar(255) NOT NULL,
-  `water_pump_DeviceID` int(11) NOT NULL COMMENT 'Device ID thay vì GardenID',
+  `water_pump_Value` varchar(255) NOT NULL COMMENT 'Trạng thái bơm (0=tắt, 1=bật)',
+  `water_pump_DeviceID` int(11) NOT NULL COMMENT 'Device ID',
+  `water_pump_Mode` varchar(20) DEFAULT 'MANUAL' COMMENT 'Chế độ: MANUAL hoặc AUTO',
+  `water_pump_Duration` int(11) DEFAULT NULL COMMENT 'Thời lượng tưới (giây)',
   PRIMARY KEY (`water_pump_ID`),
   KEY `water_pump_DeviceID` (`water_pump_DeviceID`),
   CONSTRAINT `tbl_water_pump_ibfk_1` FOREIGN KEY (`water_pump_DeviceID`) REFERENCES `tbl_device` (`device_ID`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================================
--- TẠO BẢNG: tbl_condition (Điều kiện tự động - có thể không dùng)
+-- TẠO BẢNG: tbl_condition (Điều kiện tự động - dùng trong Dashboard, HomeScreen)
+-- LƯU Ý: Bảng này vẫn được frontend sử dụng (Dashboard, ThresholdAlert, HomeScreen, PumpSetting)
 -- ============================================================================
 
 CREATE TABLE `tbl_condition` (
   `condition_ID` int(11) NOT NULL AUTO_INCREMENT,
-  `condition_Amdat` varchar(255) NOT NULL,
-  `condition_Temp` varchar(255) NOT NULL,
-  `condition_Humid` varchar(255) NOT NULL,
-  `condition_DeviceID` int(11) NOT NULL COMMENT 'Device ID thay vì GardenID',
+  `condition_Amdat` varchar(255) NOT NULL COMMENT 'Ngưỡng độ ẩm đất',
+  `condition_Temp` varchar(255) NOT NULL COMMENT 'Ngưỡng nhiệt độ',
+  `condition_Humid` varchar(255) NOT NULL COMMENT 'Ngưỡng độ ẩm không khí',
+  `condition_DeviceID` int(11) NOT NULL COMMENT 'Device ID',
   PRIMARY KEY (`condition_ID`),
   KEY `condition_DeviceID` (`condition_DeviceID`),
   CONSTRAINT `tbl_condition_ibfk_1` FOREIGN KEY (`condition_DeviceID`) REFERENCES `tbl_device` (`device_ID`) ON DELETE CASCADE
@@ -183,18 +187,5 @@ COMMIT;
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 
--- ============================================================================
--- HOÀN TẤT
--- ============================================================================
--- 
--- Database đã được tạo với:
--- ✅ Bỏ tbl_garden hoàn toàn
--- ✅ Bỏ tbl_user (không cần authentication)
--- ✅ Bỏ tbl_light (không dùng cảm biến ánh sáng)
--- ✅ tbl_device là bảng chính, tất cả tham chiếu đến device
--- ✅ Tất cả các bảng sensor tham chiếu device_ID thay vì garden_ID
--- ✅ Foreign keys và constraints
--- ✅ Indexes để tối ưu performance
--- ✅ Dữ liệu mẫu (1 device)
 -- ============================================================================
 

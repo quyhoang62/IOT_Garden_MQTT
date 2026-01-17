@@ -97,6 +97,18 @@ const toggleAutoWatering = async (req, res) => {
     }
 
     await thresholdModel.toggleAutoWatering(device.device_ID, enabled);
+    // After toggle, fetch latest threshold and explicitly publish config (ensures payload includes enable_auto)
+    try {
+      const latest = await thresholdModel.getThresholdByDeviceId(device.device_ID);
+      if (latest) {
+        // publish via model helper
+        await thresholdModel.publishThresholdConfig(device.device_ID, latest).catch(() => {});
+        console.log(`[thresholdController] Published config after toggle for device ${device.device_ID}`);
+      }
+    } catch (pubErr) {
+      console.error('[thresholdController] Error publishing config after toggle:', pubErr);
+    }
+
     res.json({ message: `Auto watering ${enabled ? 'enabled' : 'disabled'}` });
   } catch (error) {
     console.error('Error toggling auto watering:', error);
@@ -106,35 +118,150 @@ const toggleAutoWatering = async (req, res) => {
 
 /**
  * POST /api/update-config
- * Body: { deviceId, min_soil, max_soil, max_temp, duration }
+ * Body: { deviceId, threshold_on, threshold_off, duration }
  * Accepts deviceId as either internal device_ID or device_MQTT_ID
+ * Supports backward compatibility with min_soil and max_soil
+ * Chỉ sử dụng độ ẩm đất (không dùng nhiệt độ và độ ẩm không khí)
  */
 const updateConfig = async (req, res) => {
   try {
-    const { deviceId: deviceIdentifier, min_soil, max_soil, max_temp, duration } = req.body;
+    // Log immediately to see what we receive
+    console.log('[updateConfig] ========== REQUEST RECEIVED ==========');
+    console.log('[updateConfig] Request method:', req.method);
+    console.log('[updateConfig] Request headers:', JSON.stringify(req.headers, null, 2));
+    console.log('[updateConfig] Raw req.body type:', typeof req.body);
+    console.log('[updateConfig] Raw req.body:', req.body);
+    console.log('[updateConfig] Full request body (stringified):', JSON.stringify(req.body, null, 2));
+    
+    // Support both new format (threshold_on, threshold_off) and old format (min_soil, max_soil)
+    // Access req.body directly to ensure we get the data
+    const deviceIdentifier = req.body?.deviceId || req.body?.deviceIdentifier;
+    const threshold_on = req.body?.threshold_on;
+    const threshold_off = req.body?.threshold_off;
+    const min_soil = req.body?.min_soil;  // backward compatibility
+    const max_soil = req.body?.max_soil;  // backward compatibility
+    const duration = req.body?.duration;
+    const pump = req.body?.pump || 'V1';  // V1, V2, or ALL - default to V1
+    
+    // Use new format if available, otherwise fall back to old format
+    const minSoil = threshold_on ?? min_soil;
+    const maxSoil = threshold_off ?? max_soil;
+    
+    console.log('[updateConfig] Extracted values:', { 
+      deviceIdentifier, 
+      threshold_on, 
+      threshold_off,
+      min_soil,
+      max_soil,
+      duration
+    });
+    console.log('[updateConfig] Parsed values (after fallback):', { 
+      deviceIdentifier, 
+      threshold_on: minSoil, 
+      threshold_off: maxSoil, 
+      duration,
+      raw_threshold_on: threshold_on,
+      raw_threshold_off: threshold_off,
+      raw_min_soil: min_soil,
+      raw_max_soil: max_soil
+    });
 
-    // Basic presence validation
-    if (min_soil == null || max_soil == null || max_temp == null || duration == null) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    // Validate deviceId first
+    if (!deviceIdentifier) {
+      console.error('[updateConfig] ❌ Missing deviceId');
+      return res.status(400).json({ 
+        error: 'Missing required fields: deviceId is required',
+        received: req.body
+      });
     }
+
+    // Basic presence validation - chỉ yêu cầu độ ẩm đất và duration
+    const missingFields = [];
+    
+    // Detailed validation with logging
+    console.log('[updateConfig] Validating fields...');
+    console.log('[updateConfig] minSoil check:', {
+      value: minSoil,
+      type: typeof minSoil,
+      isNull: minSoil == null,
+      isEmpty: minSoil === '',
+      isNaN: isNaN(Number(minSoil)),
+      numberValue: Number(minSoil)
+    });
+    
+    if (minSoil == null || minSoil === '' || isNaN(Number(minSoil))) {
+      missingFields.push('threshold_on');
+      console.log('[updateConfig] ❌ threshold_on is missing/invalid');
+    }
+    
+    console.log('[updateConfig] maxSoil check:', {
+      value: maxSoil,
+      type: typeof maxSoil,
+      isNull: maxSoil == null,
+      isEmpty: maxSoil === '',
+      isNaN: isNaN(Number(maxSoil)),
+      numberValue: Number(maxSoil)
+    });
+    
+    if (maxSoil == null || maxSoil === '' || isNaN(Number(maxSoil))) {
+      missingFields.push('threshold_off');
+      console.log('[updateConfig] ❌ threshold_off is missing/invalid');
+    }
+    
+    console.log('[updateConfig] duration check:', {
+      value: duration,
+      type: typeof duration,
+      isNull: duration == null,
+      isEmpty: duration === '',
+      isNaN: isNaN(Number(duration)),
+      numberValue: Number(duration)
+    });
+    
+    if (duration == null || duration === '' || isNaN(Number(duration))) {
+      missingFields.push('duration');
+      console.log('[updateConfig] ❌ duration is missing/invalid');
+    }
+    
+    if (missingFields.length > 0) {
+      console.error('[updateConfig] ❌ Missing required fields:', missingFields);
+      console.error('[updateConfig] Full validation details:', {
+        missingFields: missingFields,
+        received: {
+          deviceId: deviceIdentifier,
+          threshold_on: minSoil,
+          threshold_off: maxSoil,
+          duration: duration
+        },
+        rawBody: req.body
+      });
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        missingFields: missingFields,
+        received: {
+          deviceId: deviceIdentifier,
+          threshold_on: minSoil,
+          threshold_off: maxSoil,
+          duration: duration
+        }
+      });
+    }
+    
+    console.log('[updateConfig] ✓ All required fields present');
 
     // Numeric validation
-    const minSoil = Number(min_soil);
-    const maxSoil = Number(max_soil);
-    const maxTemp = Number(max_temp);
+    const minVal = Number(minSoil);
+    const maxVal = Number(maxSoil);
     const dur = Number(duration);
 
-    if (isNaN(minSoil) || isNaN(maxSoil) || isNaN(maxTemp) || isNaN(dur)) {
+    if (isNaN(minVal) || isNaN(maxVal) || isNaN(dur)) {
       return res.status(400).json({ error: 'Invalid numeric values' });
     }
-    if (minSoil < 0 || minSoil > 100 || maxSoil < 0 || maxSoil > 100) {
-      return res.status(400).json({ error: 'Soil values must be between 0 and 100' });
+    if (minVal < 0 || minVal > 100 || maxVal < 0 || maxVal > 100) {
+      return res.status(400).json({ error: 'Soil moisture values must be between 0 and 100' });
     }
-    if (minSoil >= maxSoil) {
-      return res.status(400).json({ error: 'min_soil must be less than max_soil' });
-    }
-    if (maxTemp < 0 || maxTemp > 60) {
-      return res.status(400).json({ error: 'max_temp must be between 0 and 60' });
+    // Validate threshold_off > threshold_on
+    if (minVal >= maxVal) {
+      return res.status(400).json({ error: 'threshold_off (Dừng khi ≥) must be greater than threshold_on (Kích hoạt khi dưới)' });
     }
     if (dur <= 0) {
       return res.status(400).json({ error: 'duration must be > 0' });
@@ -151,19 +278,32 @@ const updateConfig = async (req, res) => {
     if (!device || !device.device_ID) {
       return res.status(404).json({ error: 'Device not found' });
     }
+    console.log('[updateConfig] ✓ Device resolved:', {
+      device_ID: device.device_ID,
+      device_MQTT_ID: device.device_MQTT_ID,
+      device_Name: device.device_Name
+    });
 
+    // Chỉ lưu ngưỡng độ ẩm đất, set null cho nhiệt độ và độ ẩm không khí
     const thresholdObj = {
       threshold_Temp_Min: null,
-      threshold_Temp_Max: maxTemp,
-      threshold_Humidity_Min: null,
-      threshold_Humidity_Max: null,
-      threshold_SoilMoisture_Min: minSoil,
-      threshold_SoilMoisture_Max: maxSoil,
+      threshold_Temp_Max: null,  // Không dùng nhiệt độ
+      threshold_Humidity_Min: null,  // Không dùng độ ẩm không khí
+      threshold_Humidity_Max: null,  // Không dùng độ ẩm không khí
+      threshold_SoilMoisture_Min: minVal,  // threshold_on - Ngưỡng thấp để KÍCH HOẠT bơm
+      threshold_SoilMoisture_Max: maxVal,  // threshold_off - Ngưỡng cao để NGẮT bơm
       threshold_Enabled: true,
-      threshold_Duration: dur
+      threshold_Duration: dur,
+      threshold_Pump: pump  // V1, V2, or ALL
     };
-
-    await thresholdModel.upsertThreshold(device.device_ID, thresholdObj);
+    console.log('[updateConfig] Upserting threshold for deviceId=', device.device_ID);
+    console.log('[updateConfig] Threshold payload:', JSON.stringify(thresholdObj, null, 2));
+    const upsertResult = await thresholdModel.upsertThreshold(device.device_ID, thresholdObj);
+    console.log('[updateConfig] ✓ Upsert result:', {
+      affectedRows: upsertResult.affectedRows,
+      insertId: upsertResult.insertId
+    });
+    console.log('[updateConfig] ========== REQUEST COMPLETED ==========');
 
     return res.json({ message: 'Cấu hình đã được cập nhật & gửi xuống thiết bị!' });
   } catch (err) {
@@ -230,13 +370,14 @@ const checkAndAutoWater = async (deviceId, sensorData) => {
       const pumpTopic = `IOTGARDEN${mqttId}/feeds/V1`;
       
       // Gửi lệnh tưới
-      if (mqttModel.client) {
+      const mqttClient = mqttModel.getClient ? mqttModel.getClient() : mqttModel.client;
+      if (mqttClient && mqttClient.connected) {
         const messageOn = String('1');
         const messageOff = String('0');
         
         console.log(`[Auto Water] Publishing ON command: Topic="${pumpTopic}", Message="${messageOn}"`);
         
-        mqttModel.client.publish(pumpTopic, messageOn, { qos: 0, retain: false }, async (err) => {
+        mqttClient.publish(pumpTopic, messageOn, { qos: 0, retain: false }, async (err) => {
           if (err) {
             console.error(`[Auto Water] Error publishing to ${pumpTopic}:`, err);
           } else {
@@ -261,13 +402,18 @@ const checkAndAutoWater = async (deviceId, sensorData) => {
             // Tự động tắt sau thời gian chỉ định
             setTimeout(() => {
               console.log(`[Auto Water] Publishing OFF command: Topic="${pumpTopic}", Message="${messageOff}"`);
-              mqttModel.client.publish(pumpTopic, messageOff, { qos: 0, retain: false }, (err) => {
+              const mqttClientForOff = mqttModel.getClient ? mqttModel.getClient() : mqttModel.client;
+              if (mqttClientForOff && mqttClientForOff.connected) {
+                mqttClientForOff.publish(pumpTopic, messageOff, { qos: 0, retain: false }, (err) => {
                 if (err) {
                   console.error(`[Auto Water] Error publishing OFF command to ${pumpTopic}:`, err);
                 } else {
                   console.log(`[Auto Water] ✓ Auto watering stopped for Device ${deviceId}`);
                 }
               });
+              } else {
+                console.warn(`[Auto Water] ⚠️  MQTT client not available when trying to turn OFF pump for Device ${deviceId}`);
+              }
             }, (threshold.threshold_Duration || 10) * 1000);
           }
         });

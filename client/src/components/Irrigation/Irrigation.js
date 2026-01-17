@@ -147,7 +147,9 @@ function Irrigation() {
     threshold_SoilMoisture_Min: null,
     threshold_SoilMoisture_Max: null,
     threshold_Enabled: false,
-    threshold_Duration: 10
+    threshold_Duration: 10,
+    threshold_Pump: 'V1',
+    primaryCondition: 'soilMoisture' // 'soilMoisture', 'temperature', 'humidity'
   });
   const [loadingThreshold, setLoadingThreshold] = useState(false);
   const [sensorLatest, setSensorLatest] = useState({
@@ -155,6 +157,30 @@ function Irrigation() {
     humid: null,
     soilMoisture: null
   });
+  const [lastSensorUpdate, setLastSensorUpdate] = useState(null); // Timestamp of last sensor update
+  const [updateTimeAgo, setUpdateTimeAgo] = useState('10s trước'); // Display text for time ago
+  
+  // Sensor rules list state
+  const [sensorRules, setSensorRules] = useState(() => {
+    // Load from localStorage on init
+    try {
+      const saved = localStorage.getItem('sensorRules');
+      return saved ? JSON.parse(saved) : [];
+    } catch (err) {
+      console.error('Error loading sensorRules from localStorage:', err);
+      return [];
+    }
+  });
+  const [editingRuleId, setEditingRuleId] = useState(null); // ID of rule being edited
+
+  // Save sensorRules to localStorage whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem('sensorRules', JSON.stringify(sensorRules));
+    } catch (err) {
+      console.error('Error saving sensorRules to localStorage:', err);
+    }
+  }, [sensorRules]);
   
   // Fetch threshold on mount
   useEffect(() => {
@@ -243,6 +269,7 @@ function Irrigation() {
             humid: latestDht ? latestDht.dht_Humid : null,
             soilMoisture: latestSoil ? latestSoil.soil_moisture_Value : null
           });
+          setLastSensorUpdate(new Date());
         } catch (err) {
           // ignore
         }
@@ -253,17 +280,71 @@ function Irrigation() {
 
     fetchForDevice();
   }, [selectedDeviceId]);
+
+  // Update "time ago" display every second
+  useEffect(() => {
+    if (!lastSensorUpdate) return;
+    
+    const updateTimeAgoText = () => {
+      const now = new Date();
+      const diff = Math.floor((now - lastSensorUpdate) / 1000); // seconds
+      
+      if (diff < 60) {
+        setUpdateTimeAgo(`${diff}s trước`);
+      } else if (diff < 3600) {
+        const minutes = Math.floor(diff / 60);
+        setUpdateTimeAgo(`${minutes} phút trước`);
+      } else {
+        const hours = Math.floor(diff / 3600);
+        setUpdateTimeAgo(`${hours} giờ trước`);
+      }
+    };
+    
+    updateTimeAgoText();
+    const interval = setInterval(updateTimeAgoText, 1000);
+    
+    return () => clearInterval(interval);
+  }, [lastSensorUpdate]);
   
   // Save threshold
-  const [alert, setAlert] = useState(null); // { type: 'success'|'error', message: string }
+  const [uiAlert, setUiAlert] = useState(null); // { type: 'success'|'error', message: string }
+  const [thresholdValidationError, setThresholdValidationError] = useState(null); // Validation error for threshold_on < threshold_off
+
+  // Validate threshold_on < threshold_off whenever values change
+  useEffect(() => {
+    let minVal, maxVal;
+    
+    if (threshold.primaryCondition === 'soilMoisture') {
+      minVal = threshold.threshold_SoilMoisture_Min;
+      maxVal = threshold.threshold_SoilMoisture_Max;
+    } else if (threshold.primaryCondition === 'temperature') {
+      minVal = threshold.threshold_Temp_Min;
+      maxVal = threshold.threshold_Temp_Max;
+    } else if (threshold.primaryCondition === 'humidity') {
+      minVal = threshold.threshold_Humidity_Min;
+      maxVal = threshold.threshold_Humidity_Max;
+    }
+    
+    if (minVal != null && maxVal != null && !isNaN(Number(minVal)) && !isNaN(Number(maxVal))) {
+      const min = Number(minVal);
+      const max = Number(maxVal);
+      if (min >= max) {
+        setThresholdValidationError('Ngưỡng "Dừng khi ≥" phải lớn hơn "Kích hoạt khi dưới"');
+      } else {
+        setThresholdValidationError(null);
+      }
+    } else {
+      setThresholdValidationError(null);
+    }
+  }, [threshold.threshold_SoilMoisture_Min, threshold.threshold_SoilMoisture_Max, threshold.threshold_Temp_Min, threshold.threshold_Temp_Max, threshold.threshold_Humidity_Min, threshold.threshold_Humidity_Max, threshold.primaryCondition]);
 
   const handleSaveThreshold = async () => {
     setLoadingThreshold(true);
-    setAlert(null);
+    setUiAlert(null);
     try {
       const gardenId = localStorage.getItem('gardenId');
       if (!gardenId) {
-        setAlert({ type: 'error', message: 'Chưa chọn vườn' });
+        setUiAlert({ type: 'error', message: 'Chưa chọn vườn' });
         setLoadingThreshold(false);
         return;
       }
@@ -277,85 +358,265 @@ function Irrigation() {
             deviceId = devicesRes.data[0].device_ID;
             localStorage.setItem('deviceId', deviceId);
           } else {
-            setAlert({ type: 'error', message: 'Không tìm thấy thiết bị' });
+            setUiAlert({ type: 'error', message: 'Không tìm thấy thiết bị' });
             setLoadingThreshold(false);
             return;
           }
         } catch (err) {
           console.error('Error fetching devices:', err);
-          setAlert({ type: 'error', message: 'Không thể lấy thông tin thiết bị' });
+          setUiAlert({ type: 'error', message: 'Không thể lấy thông tin thiết bị' });
           setLoadingThreshold(false);
           return;
         }
       }
 
-      // Read values
-      const minSoil = threshold.threshold_SoilMoisture_Min;
-      const maxSoil = threshold.threshold_SoilMoisture_Max;
-      const maxTemp = threshold.threshold_Temp_Max;
+      // Read values based on primary condition
       const dur = threshold.threshold_Duration;
+      let minVal, maxVal, validationError = null;
 
-      // Client-side validation (required)
-      if (minSoil == null || maxSoil == null || maxTemp == null || dur == null) {
-        setAlert({ type: 'error', message: 'Vui lòng điền đầy đủ các ô.' });
+      // Validate based on primary condition
+      if (threshold.primaryCondition === 'soilMoisture') {
+        const minSoil = threshold.threshold_SoilMoisture_Min;
+        const maxSoil = threshold.threshold_SoilMoisture_Max;
+        
+        if (minSoil == null || minSoil === '' || isNaN(Number(minSoil))) {
+          validationError = 'Vui lòng nhập ngưỡng kích hoạt (độ ẩm đất)';
+        } else if (maxSoil == null || maxSoil === '' || isNaN(Number(maxSoil))) {
+          validationError = 'Vui lòng nhập ngưỡng dừng (độ ẩm đất)';
+        } else {
+          minVal = Number(minSoil);
+          maxVal = Number(maxSoil);
+          
+          if (minVal < 0 || minVal > 100 || maxVal < 0 || maxVal > 100) {
+            validationError = 'Độ ẩm đất phải nằm trong 0 - 100%.';
+          } else if (minVal >= maxVal) {
+            validationError = 'Ngưỡng "Dừng khi ≥" phải lớn hơn "Kích hoạt khi dưới".';
+          }
+        }
+      } else if (threshold.primaryCondition === 'temperature') {
+        const minTemp = threshold.threshold_Temp_Min;
+        const maxTemp = threshold.threshold_Temp_Max;
+        
+        if (minTemp == null || minTemp === '' || isNaN(Number(minTemp))) {
+          validationError = 'Vui lòng nhập ngưỡng kích hoạt (nhiệt độ)';
+        } else if (maxTemp == null || maxTemp === '' || isNaN(Number(maxTemp))) {
+          validationError = 'Vui lòng nhập ngưỡng dừng (nhiệt độ)';
+        } else {
+          minVal = Number(minTemp);
+          maxVal = Number(maxTemp);
+          
+          if (minVal >= maxVal) {
+            validationError = 'Ngưỡng "Dừng khi ≥" phải lớn hơn "Kích hoạt khi dưới".';
+          }
+        }
+      } else if (threshold.primaryCondition === 'humidity') {
+        const minHumid = threshold.threshold_Humidity_Min;
+        const maxHumid = threshold.threshold_Humidity_Max;
+        
+        if (minHumid == null || minHumid === '' || isNaN(Number(minHumid))) {
+          validationError = 'Vui lòng nhập ngưỡng kích hoạt (độ ẩm không khí)';
+        } else if (maxHumid == null || maxHumid === '' || isNaN(Number(maxHumid))) {
+          validationError = 'Vui lòng nhập ngưỡng dừng (độ ẩm không khí)';
+        } else {
+          minVal = Number(minHumid);
+          maxVal = Number(maxHumid);
+          
+          if (minVal < 0 || minVal > 100 || maxVal < 0 || maxVal > 100) {
+            validationError = 'Độ ẩm không khí phải nằm trong 0 - 100%.';
+          } else if (minVal >= maxVal) {
+            validationError = 'Ngưỡng "Dừng khi ≥" phải lớn hơn "Kích hoạt khi dưới".';
+          }
+        }
+      }
+
+      if (validationError) {
+        setUiAlert({ type: 'error', message: validationError });
         setLoadingThreshold(false);
         return;
       }
-      if (isNaN(Number(minSoil)) || isNaN(Number(maxSoil)) || isNaN(Number(maxTemp)) || isNaN(Number(dur))) {
-        setAlert({ type: 'error', message: 'Các giá trị phải là số hợp lệ.' });
+
+      if (dur == null || dur === '' || isNaN(Number(dur))) {
+        setUiAlert({ type: 'error', message: 'Vui lòng nhập thời lượng tưới.' });
         setLoadingThreshold(false);
         return;
       }
 
-      const minVal = Number(minSoil);
-      const maxVal = Number(maxSoil);
-      const tempVal = Number(maxTemp);
       const durationVal = Number(dur);
-
-      if (minVal < 0 || minVal > 100 || maxVal < 0 || maxVal > 100) {
-        setAlert({ type: 'error', message: 'Độ ẩm đất phải nằm trong 0 - 100%.' });
-        setLoadingThreshold(false);
-        return;
-      }
-      if (minVal >= maxVal) {
-        setAlert({ type: 'error', message: 'Ngưỡng độ ẩm đất thấp phải nhỏ hơn ngưỡng độ ẩm đất cao.' });
-        setLoadingThreshold(false);
-        return;
-      }
-      if (tempVal < 0 || tempVal > 60) {
-        setAlert({ type: 'error', message: 'Nhiệt độ an toàn phải trong 0 - 60°C.' });
-        setLoadingThreshold(false);
-        return;
-      }
       if (durationVal <= 0) {
-        setAlert({ type: 'error', message: 'Thời gian tối đa phải lớn hơn 0.' });
+        setUiAlert({ type: 'error', message: 'Thời lượng tưới phải lớn hơn 0.' });
         setLoadingThreshold(false);
         return;
       }
 
-      // Build payload and send to server
-      const payload = {
-        deviceId,
-        min_soil: minVal,
-        max_soil: maxVal,
-        max_temp: tempVal,
-        duration: durationVal
+      // Build payload for rule (don't send MQTT yet, only when rule is enabled)
+      // Get device name for rule
+      const selectedDevice = devices.find(d => d.device_ID === deviceId);
+      const deviceName = selectedDevice ? selectedDevice.device_Name : `Thiết bị ${deviceId}`;
+      
+      // Get pump label
+      const pumpLabel = threshold.threshold_Pump === 'V1' ? 'Bơm 1' : 
+                        threshold.threshold_Pump === 'V2' ? 'Bơm 2' : 
+                        'Cả 2 bơm';
+      
+      // Create rule name
+      const ruleName = editingRuleId 
+        ? threshold.ruleName || `Tưới theo ${threshold.primaryCondition === 'soilMoisture' ? 'độ ẩm đất' : threshold.primaryCondition === 'temperature' ? 'nhiệt độ' : 'độ ẩm KK'}`
+        : threshold.ruleName || `Tưới theo ${threshold.primaryCondition === 'soilMoisture' ? 'độ ẩm đất' : threshold.primaryCondition === 'temperature' ? 'nhiệt độ' : 'độ ẩm KK'}`;
+
+      // Create or update rule
+      const newRule = {
+        id: editingRuleId || Date.now(),
+        name: ruleName,
+        deviceId: deviceId,
+        deviceName: deviceName,
+        pump: pumpLabel,
+        pumpValue: threshold.threshold_Pump,
+        primaryCondition: threshold.primaryCondition,
+        minValue: minVal,
+        maxValue: maxVal,
+        duration: durationVal,
+        enabled: false, // New rule starts as disabled
+        createdAt: editingRuleId ? sensorRules.find(r => r.id === editingRuleId)?.createdAt : new Date().toISOString(),
+        updatedAt: new Date().toISOString()
       };
 
-      // Disable repeated clicks via loading state, show spinner in UI (button react to loadingThreshold)
-      await axios.post('/api/update-config', payload);
+      if (editingRuleId) {
+        // Update existing rule
+        setSensorRules(prev => prev.map(r => r.id === editingRuleId ? newRule : r));
+        setEditingRuleId(null);
+      } else {
+        // Add new rule
+        setSensorRules(prev => [...prev, newRule]);
+      }
 
-      setAlert({ type: 'success', message: 'Cấu hình đã được cập nhật & gửi xuống thiết bị!' });
+      // Reset form if not editing
+      if (!editingRuleId) {
+        setThreshold({
+          threshold_Temp_Min: null,
+          threshold_Temp_Max: null,
+          threshold_Humidity_Min: null,
+          threshold_Humidity_Max: null,
+          threshold_SoilMoisture_Min: null,
+          threshold_SoilMoisture_Max: null,
+          threshold_Enabled: false,
+          threshold_Duration: 10,
+          threshold_Pump: 'V1',
+          primaryCondition: 'soilMoisture',
+          ruleName: ''
+        });
+      }
+      
+      console.log('[handleSaveThreshold] ✓ Request successful');
     } catch (error) {
-      console.error('Error saving threshold:', error);
+      console.error('[handleSaveThreshold] ❌ Error saving threshold:', error);
+      console.error('[handleSaveThreshold] Error response:', error.response?.data);
+      console.error('[handleSaveThreshold] Error status:', error.response?.status);
       const message = error.response?.data?.error || 'Lỗi kết nối server';
-      setAlert({ type: 'error', message });
+      setUiAlert({ type: 'error', message });
     } finally {
       setLoadingThreshold(false);
     }
   };
   
-  // Toggle auto irrigation
+  // Delete sensor rule
+  const handleDeleteSensorRule = (ruleId) => {
+    if (window.confirm('Bạn có chắc chắn muốn xóa luật này?')) {
+      setSensorRules(prev => prev.filter(r => r.id !== ruleId));
+      if (editingRuleId === ruleId) {
+        setEditingRuleId(null);
+        // Reset form
+        setThreshold({
+          threshold_Temp_Min: null,
+          threshold_Temp_Max: null,
+          threshold_Humidity_Min: null,
+          threshold_Humidity_Max: null,
+          threshold_SoilMoisture_Min: null,
+          threshold_SoilMoisture_Max: null,
+          threshold_Enabled: false,
+          threshold_Duration: 10,
+          threshold_Pump: 'V1',
+          primaryCondition: 'soilMoisture',
+          ruleName: ''
+        });
+      }
+    }
+  };
+
+  // Edit sensor rule
+  const handleEditSensorRule = (rule) => {
+    setEditingRuleId(rule.id);
+    setThreshold({
+      threshold_Temp_Min: rule.primaryCondition === 'temperature' ? rule.minValue : null,
+      threshold_Temp_Max: rule.primaryCondition === 'temperature' ? rule.maxValue : null,
+      threshold_Humidity_Min: rule.primaryCondition === 'humidity' ? rule.minValue : null,
+      threshold_Humidity_Max: rule.primaryCondition === 'humidity' ? rule.maxValue : null,
+      threshold_SoilMoisture_Min: rule.primaryCondition === 'soilMoisture' ? rule.minValue : null,
+      threshold_SoilMoisture_Max: rule.primaryCondition === 'soilMoisture' ? rule.maxValue : null,
+      threshold_Enabled: rule.enabled,
+      threshold_Duration: rule.duration,
+      threshold_Pump: rule.pumpValue,
+      primaryCondition: rule.primaryCondition,
+      ruleName: rule.name
+    });
+    setSelectedDeviceId(rule.deviceId);
+  };
+
+  // Toggle sensor rule
+  const handleToggleSensorRule = async (ruleId) => {
+    setSensorRules(prev => {
+      const togglingRule = prev.find(r => r.id === ruleId);
+      const newEnabled = !togglingRule?.enabled;
+      
+      // If enabling this rule, disable all others and send MQTT
+      const updatedRules = prev.map(r => {
+        if (r.id === ruleId) {
+          return { ...r, enabled: newEnabled };
+        } else {
+          // Disable all other rules if we're enabling the toggling rule
+          return { ...r, enabled: newEnabled ? false : r.enabled };
+        }
+      });
+
+      // Send MQTT when enabling a rule
+      if (newEnabled && togglingRule) {
+        const payload = {
+          deviceId: togglingRule.deviceId,
+          threshold_on: togglingRule.minValue,
+          threshold_off: togglingRule.maxValue,
+          duration: togglingRule.duration,
+          pump: togglingRule.pumpValue // V1, V2, or ALL
+        };
+
+        // Send MQTT to ESP32
+        axios.post('/api/update-config', payload)
+          .then(() => {
+            console.log('[handleToggleSensorRule] ✓ MQTT sent successfully for rule:', togglingRule.name);
+          })
+          .catch(error => {
+            console.error('[handleToggleSensorRule] ❌ Error sending MQTT:', error);
+            setUiAlert({ type: 'error', message: 'Không thể gửi cấu hình xuống thiết bị. Vui lòng thử lại.' });
+            // Revert toggle on error
+            setSensorRules(prev => prev.map(r => r.id === ruleId ? { ...r, enabled: false } : r));
+          });
+      } else if (!newEnabled && togglingRule) {
+        // When disabling, send OFF command to ESP32
+        axios.post(`/api/v1/thresholds/${togglingRule.deviceId}/toggle`, { enabled: false })
+          .then(() => {
+            console.log('[handleToggleSensorRule] ✓ OFF command sent successfully for rule:', togglingRule.name);
+          })
+          .catch(error => {
+            console.error('[handleToggleSensorRule] ❌ Error sending OFF command:', error);
+            setUiAlert({ type: 'error', message: 'Không thể tắt luật. Vui lòng thử lại.' });
+            // Revert toggle on error
+            setSensorRules(prev => prev.map(r => r.id === ruleId ? { ...r, enabled: true } : r));
+          });
+      }
+
+      return updatedRules;
+    });
+  };
+
+  // Toggle auto irrigation (legacy - for backward compatibility)
   const handleToggleAutoIrrigation = async () => {
     const newValue = !autoIrrigation;
     setAutoIrrigation(newValue);
@@ -1734,261 +1995,489 @@ function Irrigation() {
         <div className="flex gap-6 items-start">
           {/* Left column: Rules list */}
           <div className="w-[32%]">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-800">Danh sách luật</h3>
-              <button
-                onClick={() => {
-                  // For now just enable threshold and focus
-                  setThreshold(prev => ({ ...prev, threshold_Enabled: true }));
-                  setAutoIrrigation(true);
-                }}
-                className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-500 text-white rounded-lg text-sm"
-              >
-                <HiOutlinePlus className="w-4 h-4" />
-                Thêm
-              </button>
+            <div className="mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">DANH SÁCH LUẬT</h3>
             </div>
 
-            <div className="space-y-3">
-              {/* Single rule card - reflect current threshold */}
-              <div className={`bg-white rounded-lg p-4 shadow-sm border ${threshold.threshold_Enabled ? 'border-green-200' : 'border-gray-100'}`}>
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h4 className="font-medium text-gray-800">Giữ ẩm đất trưa nắng</h4>
-                    <p className="text-sm text-gray-500 mt-1">Độ ẩm đất &lt; {threshold.threshold_SoilMoisture_Min ?? 40}% • Nhiệt độ &gt; {threshold.threshold_Temp_Max ?? 32}°C</p>
-                    <div className="mt-3 text-xs text-gray-500">Cập nhật: vài phút trước</div>
-                  </div>
-                  <div className="flex flex-col items-end gap-3">
-                    <label className="text-xs text-gray-500">Trạng thái</label>
-                    <button
-                      onClick={handleToggleAutoIrrigation}
-                      className={`inline-flex h-6 w-11 items-center rounded-full transition-colors ${autoIrrigation ? 'bg-green-500' : 'bg-gray-300'}`}
-                    >
-                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${autoIrrigation ? 'translate-x-6' : 'translate-x-1'}`} />
-                    </button>
-                  </div>
+            <div className="space-y-3 max-h-[600px] overflow-y-auto">
+              {sensorRules.length === 0 && (
+                <div className="bg-white rounded-lg p-8 text-center shadow-sm border border-gray-200">
+                  <p className="text-gray-500 text-sm">Chưa có luật nào. Nhấn "Thêm" để tạo luật mới.</p>
                 </div>
-              </div>
+              )}
+              
+              {sensorRules.map(rule => {
+                const conditionText = rule.primaryCondition === 'soilMoisture' 
+                  ? `Độ ẩm đất < ${rule.minValue}% • Dừng khi ≥ ${rule.maxValue}%`
+                  : rule.primaryCondition === 'temperature'
+                  ? `Nhiệt độ < ${rule.minValue}°C • Dừng khi ≥ ${rule.maxValue}°C`
+                  : `Độ ẩm KK < ${rule.minValue}% • Dừng khi ≥ ${rule.maxValue}%`;
+                
+                const timeAgo = rule.updatedAt 
+                  ? (() => {
+                      const now = new Date();
+                      const updated = new Date(rule.updatedAt);
+                      const diffSeconds = Math.floor((now - updated) / 1000);
+                      if (diffSeconds < 60) return `${diffSeconds}s trước`;
+                      if (diffSeconds < 3600) return `${Math.floor(diffSeconds / 60)} phút trước`;
+                      return `${Math.floor(diffSeconds / 3600)} giờ trước`;
+                    })()
+                  : 'vài phút trước';
 
-              {/* Placeholder for other rules */}
-              <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-100">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-gray-800">Tưới rau buổi sáng</div>
-                    <div className="text-sm text-gray-500">Độ ẩm đất &lt; 60%</div>
+                return (
+                  <div
+                    key={rule.id}
+                    className={`bg-white rounded-lg p-4 shadow-sm border-2 transition-all ${
+                      rule.enabled ? 'border-green-500' : 'border-gray-200'
+                    } ${editingRuleId === rule.id ? 'ring-2 ring-blue-400' : ''}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1">
+                        <h4 className="font-medium text-gray-800 mb-1">{rule.name}</h4>
+                        <p className="text-sm text-gray-600 mb-1">{conditionText}</p>
+                        <div className="text-xs text-gray-500 mb-2">
+                          <span className="font-medium">{rule.pump}</span>
+                          {' • '}
+                          <span>{rule.deviceName}</span>
+                        </div>
+                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                          <span className="text-xs text-gray-500">Cập nhật: {timeAgo}</span>
+                          {rule.enabled && (
+                            <span className="text-xs font-medium text-green-600 bg-green-50 px-2 py-0.5 rounded">ĐANG CHẠY</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end gap-2">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleEditSensorRule(rule)}
+                            className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
+                            title="Chỉnh sửa"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteSensorRule(rule.id)}
+                            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-all"
+                            title="Xóa"
+                          >
+                            <HiOutlineTrash className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <label className="text-xs text-gray-500">Trạng thái</label>
+                        <button
+                          onClick={() => handleToggleSensorRule(rule.id)}
+                          className={`inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            rule.enabled ? 'bg-green-500' : 'bg-gray-300'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              rule.enabled ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button className="inline-flex h-6 w-11 items-center rounded-full bg-gray-300">
-                      <span className="inline-block h-4 w-4 transform rounded-full bg-white translate-x-1" />
-                    </button>
-                  </div>
-                </div>
-              </div>
+                );
+              })}
             </div>
           </div>
 
           {/* Right column: Rule editor / form */}
           <div className="w-[68%] bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex-1 pr-6">
-                <h2 className="text-xl font-semibold text-gray-800 mb-1">Cấu hình luật tưới</h2>
-                <p className="text-sm text-gray-500">Cấu hình các kịch bản tưới nước tự động dựa trên cảm biến môi trường.</p>
+            {/* Scenario Name and Action Buttons */}
+            <div className="flex items-center justify-between mb-6 pb-6 border-b border-gray-200">
+              <div className="flex-1">
+                {editingRuleId ? (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-600 mb-2">Tên luật</label>
+                    <input
+                      type="text"
+                      value={threshold.ruleName || ''}
+                      onChange={(e) => setThreshold(prev => ({ ...prev, ruleName: e.target.value }))}
+                      placeholder="Nhập tên luật..."
+                      className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none"
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-600 mb-2">Tên luật</label>
+                    <input
+                      type="text"
+                      value={threshold.ruleName || ''}
+                      onChange={(e) => setThreshold(prev => ({ ...prev, ruleName: e.target.value }))}
+                      placeholder="Nhập tên luật (ví dụ: Tưới tự động theo độ ẩm đất)..."
+                      className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none"
+                    />
+                  </div>
+                )}
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 ml-4">
                 <button
                   onClick={() => {
-                    // revert: reload threshold from server could be implemented
-                    // for now simply refetch by calling fetchThreshold logic isn't exported; just notify user
-                    alert('Đã bỏ thay đổi (chưa lưu).');
+                    setEditingRuleId(null);
+                    setThreshold({
+                      threshold_Temp_Min: null,
+                      threshold_Temp_Max: null,
+                      threshold_Humidity_Min: null,
+                      threshold_Humidity_Max: null,
+                      threshold_SoilMoisture_Min: null,
+                      threshold_SoilMoisture_Max: null,
+                      threshold_Enabled: false,
+                      threshold_Duration: 10,
+                      threshold_Pump: 'V1',
+                      primaryCondition: 'soilMoisture',
+                      ruleName: ''
+                    });
                   }}
-                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg"
+                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
                 >
                   Hủy bỏ
                 </button>
                 <button
                   onClick={handleSaveThreshold}
-                  disabled={loadingThreshold}
-                  className={`px-4 py-2 rounded-lg text-white ${loadingThreshold ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600'}`}
+                  disabled={loadingThreshold || thresholdValidationError !== null}
+                  className={`px-4 py-2 rounded-lg text-white flex items-center gap-2 ${
+                    loadingThreshold || thresholdValidationError !== null 
+                      ? 'bg-gray-300 cursor-not-allowed' 
+                      : 'bg-green-500 hover:bg-green-600'
+                  }`}
                 >
                   {loadingThreshold ? (
-                    <span className="inline-flex items-center gap-2">
+                    <>
                       <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
                       <span>Đang lưu...</span>
-                    </span>
-                  ) : 'Lưu cấu hình'}
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                      </svg>
+                      <span>{editingRuleId ? 'Cập nhật' : 'Lưu cấu hình'}</span>
+                    </>
+                  )}
                 </button>
               </div>
-              {alert && (
-                <div className={`mt-4 p-3 rounded-lg ${alert.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
-                  {alert.message}
+            </div>
+
+            {/* 1. CHỌN ĐỐI TƯỢNG & AN TOÀN */}
+            <div className="mb-8">
+              <div className="mb-4 text-sm font-semibold text-gray-700">1. CHỌN ĐỐI TƯỢNG & AN TOÀN</div>
+              
+              {/* Device Selection */}
+              <div className="mb-4">
+                <label className="block text-sm text-gray-600 mb-2">Thiết bị điều khiển</label>
+                <select
+                  value={selectedDeviceId || ''}
+                  onChange={(e) => {
+                    const deviceId = e.target.value ? parseInt(e.target.value) : null;
+                    setSelectedDeviceId(deviceId);
+                    try { if (deviceId) localStorage.setItem('deviceId', String(deviceId)); } catch (_) {}
+                  }}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all bg-white"
+                >
+                  <option value="">-- Chọn thiết bị --</option>
+                  {devices.map(device => (
+                    <option key={device.device_ID} value={device.device_ID}>
+                      {device.device_Name} (MQTT ID: {device.device_MQTT_ID})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Pump Selection - Multiple selection */}
+              <div className="mb-4">
+                <label className="block text-sm text-gray-600 mb-2">Máy bơm hoạt động</label>
+                <div className="flex gap-3">
+                  {[
+                    { num: 1, label: 'Bơm 1', value: 'V1' },
+                    { num: 2, label: 'Bơm 2', value: 'V2' },
+                    { num: 3, label: 'Cả 2 bơm', value: 'ALL' }
+                  ].map(pump => {
+                    const isSelected = threshold.threshold_Pump === pump.value;
+                    return (
+                      <button
+                        key={pump.num}
+                        onClick={() => {
+                          setThreshold(prev => ({ ...prev, threshold_Pump: pump.value }));
+                        }}
+                        className={`flex-1 p-4 rounded-lg border-2 transition-all ${
+                          isSelected 
+                            ? 'bg-green-50 border-green-500' 
+                            : 'bg-white border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <div className="flex flex-col items-center gap-2">
+                          {isSelected && (
+                            <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                          )}
+                          <FaWater className={`w-6 h-6 ${isSelected ? 'text-green-600' : 'text-gray-400'}`} />
+                          <div className={`text-sm font-medium ${isSelected ? 'text-green-700' : 'text-gray-600'}`}>
+                            {pump.label}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Maximum Watering Time */}
+              <div>
+                <label className="block text-sm text-gray-600 mb-2">Thời gian tưới tối đa</label>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => {
+                      const newDuration = Math.max(1, (threshold.threshold_Duration || 10) - 1);
+                      setThreshold(prev => ({ ...prev, threshold_Duration: newDuration }));
+                    }}
+                    className="w-10 h-10 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 flex items-center justify-center text-gray-600 hover:text-gray-800"
+                  >
+                    <span className="text-lg">−</span>
+                  </button>
+                  <div className="flex-1 px-4 py-3 bg-gray-50 rounded-lg border border-gray-200 text-center">
+                    <span className="text-lg font-semibold text-gray-800">{threshold.threshold_Duration || 10}</span>
+                    <span className="text-sm text-gray-600 ml-2">PHÚT</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newDuration = Math.min(60, (threshold.threshold_Duration || 10) + 1);
+                      setThreshold(prev => ({ ...prev, threshold_Duration: newDuration }));
+                    }}
+                    className="w-10 h-10 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 flex items-center justify-center text-gray-600 hover:text-gray-800"
+                  >
+                    <span className="text-lg">+</span>
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Tự động ngắt bơm để bảo vệ thiết bị nếu xảy ra rò rỉ hoặc lỗi cảm biến.
+                </p>
+              </div>
+            </div>
+
+            {/* 2. CẢM BIẾN ĐIỀU KIỆN */}
+            <div className="mb-8">
+              <div className="mb-4 text-sm font-semibold text-gray-700">2. CẢM BIẾN ĐIỀU KIỆN</div>
+              <div className="grid grid-cols-3 gap-4">
+                {/* Soil Moisture */}
+                <button
+                  onClick={() => setThreshold(prev => ({ ...prev, primaryCondition: 'soilMoisture' }))}
+                  className={`p-4 rounded-lg border-2 transition-all text-left ${
+                    threshold.primaryCondition === 'soilMoisture'
+                      ? 'bg-green-50 border-green-500'
+                      : 'bg-gray-50 border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <svg className={`w-5 h-5 ${threshold.primaryCondition === 'soilMoisture' ? 'text-green-600' : 'text-gray-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 2l3 7 7 3-7 3-3 7-3-7-7-3 7-3z" />
+                      </svg>
+                      <span className={`text-sm font-medium ${threshold.primaryCondition === 'soilMoisture' ? 'text-green-800' : 'text-gray-500'}`}>Độ ẩm đất</span>
+                    </div>
+                    {threshold.primaryCondition === 'soilMoisture' && (
+                      <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </div>
+                  <p className={`text-xs font-medium ${threshold.primaryCondition === 'soilMoisture' ? 'text-green-700' : 'text-gray-400'}`}>
+                    {threshold.primaryCondition === 'soilMoisture' ? 'SỬ DỤNG LÀM ĐIỀU KIỆN CHÍNH' : 'NHẤN ĐỂ KÍCH HOẠT'}
+                  </p>
+                </button>
+
+                {/* Temperature */}
+                <button
+                  onClick={() => setThreshold(prev => ({ ...prev, primaryCondition: 'temperature' }))}
+                  className={`p-4 rounded-lg border-2 transition-all text-left ${
+                    threshold.primaryCondition === 'temperature'
+                      ? 'bg-green-50 border-green-500'
+                      : 'bg-gray-50 border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <svg className={`w-5 h-5 ${threshold.primaryCondition === 'temperature' ? 'text-green-600' : 'text-gray-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                      </svg>
+                      <span className={`text-sm font-medium ${threshold.primaryCondition === 'temperature' ? 'text-green-800' : 'text-gray-500'}`}>Nhiệt độ</span>
+                    </div>
+                    {threshold.primaryCondition === 'temperature' && (
+                      <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </div>
+                  <p className={`text-xs font-medium ${threshold.primaryCondition === 'temperature' ? 'text-green-700' : 'text-gray-400'}`}>
+                    {threshold.primaryCondition === 'temperature' ? 'SỬ DỤNG LÀM ĐIỀU KIỆN CHÍNH' : 'NHẤN ĐỂ KÍCH HOẠT'}
+                  </p>
+                </button>
+
+                {/* Air Humidity */}
+                <button
+                  onClick={() => setThreshold(prev => ({ ...prev, primaryCondition: 'humidity' }))}
+                  className={`p-4 rounded-lg border-2 transition-all text-left ${
+                    threshold.primaryCondition === 'humidity'
+                      ? 'bg-green-50 border-green-500'
+                      : 'bg-gray-50 border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <svg className={`w-5 h-5 ${threshold.primaryCondition === 'humidity' ? 'text-green-600' : 'text-gray-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
+                      </svg>
+                      <span className={`text-sm font-medium ${threshold.primaryCondition === 'humidity' ? 'text-green-800' : 'text-gray-500'}`}>Độ ẩm KK</span>
+                    </div>
+                    {threshold.primaryCondition === 'humidity' && (
+                      <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </div>
+                  <p className={`text-xs font-medium ${threshold.primaryCondition === 'humidity' ? 'text-green-700' : 'text-gray-400'}`}>
+                    {threshold.primaryCondition === 'humidity' ? 'SỬ DỤNG LÀM ĐIỀU KIỆN CHÍNH' : 'NHẤN ĐỂ KÍCH HOẠT'}
+                  </p>
+                </button>
+              </div>
+            </div>
+
+            {/* Thông số hiện tại và Ngưỡng */}
+            <div className="bg-gray-50 rounded-xl p-6">
+              <div className="mb-6">
+                <div className="flex items-center gap-3 mb-4">
+                  {threshold.primaryCondition === 'soilMoisture' && (
+                    <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 2l3 7 7 3-7 3-3 7-3-7-7-3 7-3z" />
+                    </svg>
+                  )}
+                  {threshold.primaryCondition === 'temperature' && (
+                    <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                    </svg>
+                  )}
+                  {threshold.primaryCondition === 'humidity' && (
+                    <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
+                    </svg>
+                  )}
+                  <div>
+                    <p className="text-sm text-gray-600">Thông số hiện tại</p>
+                    <p className="text-xs text-gray-500">Cập nhật {updateTimeAgo}</p>
+                  </div>
+                </div>
+                <div className="text-6xl font-bold text-green-600 text-center py-4">
+                  {threshold.primaryCondition === 'soilMoisture' && (sensorLatest.soilMoisture !== null ? `${sensorLatest.soilMoisture}%` : '—')}
+                  {threshold.primaryCondition === 'temperature' && (sensorLatest.temp !== null ? `${sensorLatest.temp}°C` : '—')}
+                  {threshold.primaryCondition === 'humidity' && (sensorLatest.humid !== null ? `${sensorLatest.humid}%` : '—')}
+                </div>
+              </div>
+
+              {threshold.primaryCondition === 'soilMoisture' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      NGƯỠNG KÍCH HOẠT (DƯỚI %)
+                    </label>
+                    <input
+                      type="number"
+                      value={threshold.threshold_SoilMoisture_Min || ''}
+                      onChange={(e) => setThreshold(prev => ({ ...prev, threshold_SoilMoisture_Min: e.target.value ? parseInt(e.target.value) : null }))}
+                      placeholder="VD: 40"
+                      className={`w-full px-4 py-3 rounded-lg border text-sm ${
+                        thresholdValidationError ? 'border-red-500 bg-red-50' : 'border-gray-300 bg-white'
+                      }`}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      NGƯỠNG DỪNG (TRÊN %)
+                    </label>
+                    <input
+                      type="number"
+                      value={threshold.threshold_SoilMoisture_Max || ''}
+                      onChange={(e) => setThreshold(prev => ({ ...prev, threshold_SoilMoisture_Max: e.target.value ? parseInt(e.target.value) : null }))}
+                      placeholder="VD: 70"
+                      className={`w-full px-4 py-3 rounded-lg border text-sm ${
+                        thresholdValidationError ? 'border-red-500 bg-red-50' : 'border-gray-300 bg-white'
+                      }`}
+                    />
+                  </div>
                 </div>
               )}
-            </div>
 
-            {/* 1. Chọn đối tượng */}
-            <div className="mb-6">
-              <div className="mb-3 text-sm font-medium text-gray-700">1. CHỌN ĐỐI TƯỢNG</div>
-              <div className="flex items-start gap-6">
-                <div className="flex-1">
-                  <label className="block text-sm text-gray-600 mb-2">Chọn thiết bị điều khiển</label>
-                  <select
-                    value={selectedDeviceId || ''}
-                    onChange={(e) => {
-                      const deviceId = e.target.value ? parseInt(e.target.value) : null;
-                      setSelectedDeviceId(deviceId);
-                      try { if (deviceId) localStorage.setItem('deviceId', String(deviceId)); } catch (_) {}
-                    }}
-                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all bg-white"
-                  >
-                    <option value="">-- Chọn thiết bị --</option>
-                    {devices.map(device => (
-                      <option key={device.device_ID} value={device.device_ID}>
-                        {device.device_Name} (MQTT ID: {device.device_MQTT_ID})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="w-60">
-                  <div className="text-sm text-gray-600 mb-2">Máy bơm (Actuator)</div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <button
-                      onClick={() => setThreshold(prev => ({ ...prev, threshold_Pump: 'V1' }))}
-                      className={`p-3 rounded-lg border ${threshold.threshold_Pump === 'V1' ? 'bg-green-50 border-green-200' : 'bg-white border-gray-200'}`}
-                    >
-                      <div className="flex flex-col items-center">
-                        <FaWater className={`w-5 h-5 ${threshold.threshold_Pump === 'V1' ? 'text-green-600' : 'text-gray-500'}`} />
-                        <div className="text-sm font-medium mt-1">Bơm 1</div>
-                      </div>
-                    </button>
-                    <button
-                      onClick={() => setThreshold(prev => ({ ...prev, threshold_Pump: 'V2' }))}
-                      className={`p-3 rounded-lg border ${threshold.threshold_Pump === 'V2' ? 'bg-green-50 border-green-200' : 'bg-white border-gray-200'}`}
-                    >
-                      <div className="flex flex-col items-center">
-                        <FaWater className={`w-5 h-5 ${threshold.threshold_Pump === 'V2' ? 'text-green-600' : 'text-gray-500'}`} />
-                        <div className="text-sm font-medium mt-1">Bơm 2</div>
-                      </div>
-                    </button>
-                    <button
-                      onClick={() => setThreshold(prev => ({ ...prev, threshold_Pump: 'ALL' }))}
-                      className={`p-3 rounded-lg border ${threshold.threshold_Pump === 'ALL' ? 'bg-green-50 border-green-200' : 'bg-white border-gray-200'}`}
-                    >
-                      <div className="flex flex-col items-center">
-                        <svg className="w-5 h-5 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12h18" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        <div className="text-sm font-medium mt-1">Tất cả</div>
-                      </div>
-                    </button>
+              {threshold.primaryCondition === 'temperature' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      NGƯỠNG KÍCH HOẠT (DƯỚI °C)
+                    </label>
+                    <input
+                      type="number"
+                      value={threshold.threshold_Temp_Min || ''}
+                      onChange={(e) => setThreshold(prev => ({ ...prev, threshold_Temp_Min: e.target.value ? parseFloat(e.target.value) : null }))}
+                      placeholder="VD: 25"
+                      className="w-full px-4 py-3 rounded-lg border border-gray-300 bg-white text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      NGƯỠNG DỪNG (TRÊN °C)
+                    </label>
+                    <input
+                      type="number"
+                      value={threshold.threshold_Temp_Max || ''}
+                      onChange={(e) => setThreshold(prev => ({ ...prev, threshold_Temp_Max: e.target.value ? parseFloat(e.target.value) : null }))}
+                      placeholder="VD: 35"
+                      className="w-full px-4 py-3 rounded-lg border border-gray-300 bg-white text-sm"
+                    />
                   </div>
                 </div>
-              </div>
-              <div className="mt-3">
-                <label className="block text-sm text-gray-600 mb-2">Thời lượng tưới (phút)</label>
-                <input
-                  type="number"
-                  min="1"
-                  max="60"
-                  value={threshold.threshold_Duration}
-                  onChange={(e) => setThreshold(prev => ({ ...prev, threshold_Duration: parseInt(e.target.value) || 10 }))}
-                  className="w-40 px-3 py-2 rounded-lg border border-gray-200 focus:border-green-500 outline-none"
-                />
-              </div>
-            </div>
+              )}
 
-            {/* 2. LOGIC KÍCH HOẠT */}
-            <div>
-              <div className="mb-4 text-sm font-medium text-gray-700">2. LOGIC KÍCH HOẠT</div>
-              <div className="grid grid-cols-3 gap-4">
-                {/* Temperature card */}
-                <div className="p-4 bg-white rounded-lg border border-gray-100 shadow-sm">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-9 h-9 bg-red-50 rounded-full flex items-center justify-center">
-                        <svg className="w-5 h-5 text-red-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2v6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      </div>
-                      <div>
-                        <div className="text-sm font-medium text-gray-800">Nhiệt độ</div>
-                        <div className="text-xs text-gray-500">Hiện tại</div>
-                      </div>
-                    </div>
-                  <div className="text-2xl font-bold text-gray-800">{sensorLatest.temp !== null ? `${sensorLatest.temp}°C` : '—'}</div>
+              {threshold.primaryCondition === 'humidity' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      NGƯỠNG KÍCH HOẠT (DƯỚI %)
+                    </label>
+                    <input
+                      type="number"
+                      value={threshold.threshold_Humidity_Min || ''}
+                      onChange={(e) => setThreshold(prev => ({ ...prev, threshold_Humidity_Min: e.target.value ? parseInt(e.target.value) : null }))}
+                      placeholder="VD: 50"
+                      className="w-full px-4 py-3 rounded-lg border border-gray-300 bg-white text-sm"
+                    />
                   </div>
-                  <div className="mt-2">
-                    <label className="text-xs text-gray-500">Kích hoạt khi</label>
-                    <div className="mt-2 flex items-center gap-2">
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={threshold.threshold_Temp_Max || ''}
-                        onChange={(e) => setThreshold(prev => ({ ...prev, threshold_Temp_Max: e.target.value ? parseFloat(e.target.value) : null }))}
-                        placeholder="VD: 32"
-                        className="w-24 px-2 py-1 rounded-lg border border-gray-200 text-sm"
-                      />
-                      <span className="text-sm text-gray-600">°C</span>
-                      <div className="ml-auto text-sm text-gray-500">></div>
-                    </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      NGƯỠNG DỪNG (TRÊN %)
+                    </label>
+                    <input
+                      type="number"
+                      value={threshold.threshold_Humidity_Max || ''}
+                      onChange={(e) => setThreshold(prev => ({ ...prev, threshold_Humidity_Max: e.target.value ? parseInt(e.target.value) : null }))}
+                      placeholder="VD: 80"
+                      className="w-full px-4 py-3 rounded-lg border border-gray-300 bg-white text-sm"
+                    />
                   </div>
                 </div>
+              )}
 
-                {/* Air Humidity card */}
-                <div className="p-4 bg-white rounded-lg border border-gray-100 shadow-sm">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-9 h-9 bg-blue-50 rounded-full flex items-center justify-center">
-                        <svg className="w-5 h-5 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2C7 7 5 10 5 13a7 7 0 0014 0c0-3-2-6-7-11z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      </div>
-                      <div>
-                        <div className="text-sm font-medium text-gray-800">Độ ẩm không khí</div>
-                        <div className="text-xs text-gray-500">Hiện tại</div>
-                      </div>
-                    </div>
-                    <div className="text-2xl font-bold text-gray-800">{sensorLatest.humid !== null ? `${sensorLatest.humid}%` : '—'}</div>
-                  </div>
-                  <div className="mt-2">
-                    <label className="text-xs text-gray-500">Kích hoạt khi dưới</label>
-                    <div className="mt-2 flex items-center gap-2">
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={threshold.threshold_Humidity_Min || ''}
-                        onChange={(e) => setThreshold(prev => ({ ...prev, threshold_Humidity_Min: e.target.value ? parseFloat(e.target.value) : null }))}
-                        placeholder="VD: 30"
-                        className="w-24 px-2 py-1 rounded-lg border border-gray-200 text-sm"
-                      />
-                      <span className="text-sm text-gray-600">%</span>
-                    </div>
-                  </div>
+              {thresholdValidationError && (
+                <div className="mt-3 text-sm text-red-600 flex items-center gap-2">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                  {thresholdValidationError}
                 </div>
-
-                {/* Soil Moisture card */}
-                <div className="p-4 bg-white rounded-lg border border-gray-100 shadow-sm">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-9 h-9 bg-green-50 rounded-full flex items-center justify-center">
-                        <svg className="w-5 h-5 text-green-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2l3 7 7 3-7 3-3 7-3-7-7-3 7-3z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      </div>
-                      <div>
-                        <div className="text-sm font-medium text-gray-800">Độ ẩm đất</div>
-                        <div className="text-xs text-gray-500">Hiện tại</div>
-                      </div>
-                    </div>
-                    <div className="text-2xl font-bold text-gray-800">{sensorLatest.soilMoisture !== null ? `${sensorLatest.soilMoisture}%` : '—'}</div>
-                  </div>
-                  <div className="mt-2">
-                    <label className="text-xs text-gray-500">Kích hoạt khi dưới</label>
-                    <div className="mt-2 flex items-center gap-2">
-                      <input
-                        type="number"
-                        value={threshold.threshold_SoilMoisture_Min || ''}
-                        onChange={(e) => setThreshold(prev => ({ ...prev, threshold_SoilMoisture_Min: e.target.value ? parseInt(e.target.value) : null }))}
-                        placeholder="VD: 40"
-                        className="w-24 px-2 py-1 rounded-lg border border-gray-200 text-sm"
-                      />
-                      <span className="text-sm text-gray-600">%</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         </div>

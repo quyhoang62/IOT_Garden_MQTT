@@ -208,7 +208,15 @@ app.use('/api/v1/thresholds', thresholdRouter);
  * Body: { deviceId, min_soil, max_soil, max_temp, duration }
  * This endpoint accepts deviceId as either internal device_ID or device_MQTT_ID
  */
-app.post('/api/update-config', thresholdController.updateConfig);
+app.post('/api/update-config', (req, res, next) => {
+  console.log('[SERVER] ========== /api/update-config REQUEST ==========');
+  console.log('[SERVER] Method:', req.method);
+  console.log('[SERVER] Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('[SERVER] Body type:', typeof req.body);
+  console.log('[SERVER] Body:', req.body);
+  console.log('[SERVER] Body keys:', req.body ? Object.keys(req.body) : 'N/A');
+  next();
+}, thresholdController.updateConfig);
 
 /**
  * Mount scheduleRouter tại /api/v1/schedules
