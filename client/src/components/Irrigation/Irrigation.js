@@ -18,6 +18,7 @@ function Irrigation() {
   const relayIntervalsRef = useRef({ relay1: null, relay2: null, both: null });
   const relayTimeoutsRef = useRef({ relay1: null, relay2: null, both: null });
   const totalSecondsAtStartRef = useRef({ relay1: 0, relay2: 0 });
+  const prevDeviceIdRef = useRef(null); // Track previous device to only reset when actually switching
   const [lastWatering, setLastWatering] = useState({
     time: 'Hôm nay, 06:00 AM',
     duration: '15 phút',
@@ -280,6 +281,46 @@ function Irrigation() {
 
     fetchForDevice();
   }, [selectedDeviceId]);
+
+  // Reset pump status when device changes in manual irrigation tab (only when actually switching to a different device)
+  useEffect(() => {
+    if (activeTab === 'manual' && selectedDeviceId) {
+      // Only reset if we're actually switching to a different device
+      const currentDeviceId = selectedDeviceId;
+      const previousDeviceId = prevDeviceIdRef.current;
+      
+      // If device actually changed (not initial load or same device reselected)
+      if (previousDeviceId !== null && previousDeviceId !== currentDeviceId) {
+        // Clear any running intervals/timeouts when switching devices
+        if (relayIntervalsRef.current.relay1) {
+          clearInterval(relayIntervalsRef.current.relay1);
+          relayIntervalsRef.current.relay1 = null;
+        }
+        if (relayIntervalsRef.current.relay2) {
+          clearInterval(relayIntervalsRef.current.relay2);
+          relayIntervalsRef.current.relay2 = null;
+        }
+        if (relayTimeoutsRef.current.relay1) {
+          clearTimeout(relayTimeoutsRef.current.relay1);
+          relayTimeoutsRef.current.relay1 = null;
+        }
+        if (relayTimeoutsRef.current.relay2) {
+          clearTimeout(relayTimeoutsRef.current.relay2);
+          relayTimeoutsRef.current.relay2 = null;
+        }
+        
+        // Reset pump status states only when switching to a different device
+        setIsWateringRelay1(false);
+        setIsWateringRelay2(false);
+        setIsWatering(false);
+        setRemainingTime({ relay1: 0, relay2: 0 });
+        totalSecondsAtStartRef.current = { relay1: 0, relay2: 0 };
+      }
+      
+      // Update the previous device ID ref
+      prevDeviceIdRef.current = currentDeviceId;
+    }
+  }, [selectedDeviceId, activeTab]);
 
   // Update "time ago" display every second
   useEffect(() => {
@@ -690,25 +731,28 @@ function Irrigation() {
         setRemainingTime(prev => ({ ...prev, relay2: relayDurationSeconds }));
       }
       
-      // Lấy deviceId từ gardenId
-      const gardenId = localStorage.getItem('gardenId');
-      let deviceId = localStorage.getItem('deviceId');
+      // Ưu tiên sử dụng selectedDeviceId từ state, fallback sang localStorage
+      let deviceId = selectedDeviceId || localStorage.getItem('deviceId');
       
       // Nếu chưa có deviceId, lấy từ API
-      if (!deviceId && gardenId) {
-        try {
-          const devicesRes = await axios.get(`/api/v1/devices/garden/${gardenId}`);
-          if (devicesRes.data && devicesRes.data.length > 0) {
-            deviceId = devicesRes.data[0].device_ID;
-            localStorage.setItem('deviceId', deviceId);
+      if (!deviceId) {
+        const gardenId = localStorage.getItem('gardenId');
+        if (gardenId) {
+          try {
+            const devicesRes = await axios.get(`/api/v1/devices/garden/${gardenId}`);
+            if (devicesRes.data && devicesRes.data.length > 0) {
+              deviceId = devicesRes.data[0].device_ID;
+              setSelectedDeviceId(deviceId);
+              localStorage.setItem('deviceId', deviceId);
+            }
+          } catch (err) {
+            console.error('Error fetching devices:', err);
           }
-        } catch (err) {
-          console.error('Error fetching devices:', err);
         }
       }
       
       if (!deviceId) {
-        alert('Không tìm thấy thiết bị. Vui lòng kiểm tra cấu hình!');
+        alert('Không tìm thấy thiết bị. Vui lòng chọn thiết bị từ dropdown!');
         if (relayName === 'V1') {
           setIsWateringRelay1(false);
           setRemainingTime(prev => ({ ...prev, relay1: 0 }));
@@ -719,6 +763,8 @@ function Irrigation() {
         }
         return;
       }
+      
+      console.log(`Loaded deviceId: ${deviceId} for gardenId: ${localStorage.getItem('gardenId')}`);
       
       // Gửi request đến backend để điều khiển relay
       // Server expects duration in seconds
@@ -797,25 +843,32 @@ function Irrigation() {
   // Hàm dừng relay
   const handleStopRelay = async (relayName) => {
     try {
-      const gardenId = localStorage.getItem('gardenId');
-      let deviceId = localStorage.getItem('deviceId');
+      // Ưu tiên sử dụng selectedDeviceId từ state, fallback sang localStorage
+      let deviceId = selectedDeviceId || localStorage.getItem('deviceId');
       
-      if (!deviceId && gardenId) {
-        try {
-          const devicesRes = await axios.get(`/api/v1/devices/garden/${gardenId}`);
-          if (devicesRes.data && devicesRes.data.length > 0) {
-            deviceId = devicesRes.data[0].device_ID;
-            localStorage.setItem('deviceId', deviceId);
+      // Nếu chưa có deviceId, lấy từ API
+      if (!deviceId) {
+        const gardenId = localStorage.getItem('gardenId');
+        if (gardenId) {
+          try {
+            const devicesRes = await axios.get(`/api/v1/devices/garden/${gardenId}`);
+            if (devicesRes.data && devicesRes.data.length > 0) {
+              deviceId = devicesRes.data[0].device_ID;
+              setSelectedDeviceId(deviceId);
+              localStorage.setItem('deviceId', deviceId);
+            }
+          } catch (err) {
+            console.error('Error fetching devices:', err);
           }
-        } catch (err) {
-          console.error('Error fetching devices:', err);
         }
       }
       
       if (!deviceId) {
-        alert('Không tìm thấy thiết bị. Vui lòng kiểm tra cấu hình!');
+        alert('Không tìm thấy thiết bị. Vui lòng chọn thiết bị từ dropdown!');
         return;
       }
+      
+      console.log(`Loaded deviceId: ${deviceId} for gardenId: ${localStorage.getItem('gardenId')}`);
       
       const response = await axios.post('/stopRelay', {
         relay: relayName,
@@ -995,31 +1048,36 @@ function Irrigation() {
       totalSecondsAtStartRef.current.relay1 = duration1 * 60;
       totalSecondsAtStartRef.current.relay2 = duration2 * 60;
       
-      // Lấy deviceId từ gardenId
-      const gardenId = localStorage.getItem('gardenId');
-      let deviceId = localStorage.getItem('deviceId');
+      // Ưu tiên sử dụng selectedDeviceId từ state, fallback sang localStorage
+      let deviceId = selectedDeviceId || localStorage.getItem('deviceId');
       
       // Nếu chưa có deviceId, lấy từ API
-      if (!deviceId && gardenId) {
-        try {
-          const devicesRes = await axios.get(`/api/v1/devices/garden/${gardenId}`);
-          if (devicesRes.data && devicesRes.data.length > 0) {
-            deviceId = devicesRes.data[0].device_ID;
-            localStorage.setItem('deviceId', deviceId);
+      if (!deviceId) {
+        const gardenId = localStorage.getItem('gardenId');
+        if (gardenId) {
+          try {
+            const devicesRes = await axios.get(`/api/v1/devices/garden/${gardenId}`);
+            if (devicesRes.data && devicesRes.data.length > 0) {
+              deviceId = devicesRes.data[0].device_ID;
+              setSelectedDeviceId(deviceId);
+              localStorage.setItem('deviceId', deviceId);
+            }
+          } catch (err) {
+            console.error('Error fetching devices:', err);
           }
-        } catch (err) {
-          console.error('Error fetching devices:', err);
         }
       }
       
       if (!deviceId) {
-        alert('Không tìm thấy thiết bị. Vui lòng kiểm tra cấu hình!');
+        alert('Không tìm thấy thiết bị. Vui lòng chọn thiết bị từ dropdown!');
         setIsWatering(false);
         setIsWateringRelay1(false);
         setIsWateringRelay2(false);
         setRemainingTime({ relay1: 0, relay2: 0 });
         return;
       }
+      
+      console.log(`Loaded deviceId: ${deviceId} for gardenId: ${localStorage.getItem('gardenId')}`);
       
       // Điều khiển cả 2 relay với thời gian tương ứng (server expects seconds)
       const duration = {
@@ -1331,8 +1389,11 @@ function Irrigation() {
                 value={selectedDeviceId || ''}
                 onChange={(e) => {
                   const deviceId = e.target.value ? parseInt(e.target.value) : null;
-                  setSelectedDeviceId(deviceId);
-                  try { if (deviceId) localStorage.setItem('deviceId', String(deviceId)); } catch (_) {}
+                  // Only update if device actually changed
+                  if (deviceId !== selectedDeviceId) {
+                    setSelectedDeviceId(deviceId);
+                    try { if (deviceId) localStorage.setItem('deviceId', String(deviceId)); } catch (_) {}
+                  }
                 }}
                 className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all bg-white"
               >
@@ -1347,13 +1408,13 @@ function Irrigation() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Pump 1 Card */}
-              <div className="bg-white rounded-xl p-6 shadow-sm border-l-4 border-blue-500">
+              <div className="bg-white rounded-xl p-6 shadow-sm border-l-4 border-green-500">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
                   <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                   </svg>
-                  <h3 className="text-lg font-semibold text-gray-800">Bơm 1 ({relayControl.relay1.area})</h3>
+                  <h3 className="text-lg font-semibold text-gray-800">Bơm 1</h3>
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-green-500"></div>
@@ -1382,14 +1443,14 @@ function Irrigation() {
                           ...prev,
                           relay1: { ...prev.relay1, duration: Math.min(Math.max(parseInt(e.target.value) || 1, 1), 60) }
                         }))}
-                        className="w-20 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-20 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
                       />
                       <span className="text-sm text-gray-600">phút</span>
                     </div>
                   </div>
                   <button
                     onClick={() => handleControlRelay('V1')}
-                    className="w-full py-3 bg-blue-500 text-white rounded-lg font-medium flex items-center justify-center gap-2 hover:bg-blue-600 transition-colors"
+                    className="w-full py-3 bg-green-500 text-white rounded-lg font-medium flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"
                   >
                     <HiOutlinePlay className="w-5 h-5" />
                     <span>Bật bơm</span>
@@ -1434,13 +1495,13 @@ function Irrigation() {
             </div>
 
               {/* Pump 2 Card */}
-              <div className="bg-white rounded-xl p-6 shadow-sm border-l-4 border-blue-500">
+              <div className="bg-white rounded-xl p-6 shadow-sm border-l-4 border-green-500">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
                   <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                   </svg>
-                  <h3 className="text-lg font-semibold text-gray-800">Bơm 2 ({relayControl.relay2.area})</h3>
+                  <h3 className="text-lg font-semibold text-gray-800">Bơm 2</h3>
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-green-500"></div>
@@ -1476,7 +1537,7 @@ function Irrigation() {
                   </div>
                   <button
                     onClick={() => handleControlRelay('V2')}
-                    className="w-full py-3 bg-blue-500 text-white rounded-lg font-medium flex items-center justify-center gap-2 hover:bg-blue-600 transition-colors"
+                    className="w-full py-3 bg-green-500 text-white rounded-lg font-medium flex items-center justify-center gap-2 hover:bg-green-600 transition-colors"
                   >
                     <HiOutlinePlay className="w-5 h-5" />
                     <span>Bật bơm</span>

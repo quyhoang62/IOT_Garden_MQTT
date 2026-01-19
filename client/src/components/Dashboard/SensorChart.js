@@ -25,7 +25,7 @@ ChartJS.register(
   Filler
 );
 
-function SensorChart({ gardenId }) {
+function SensorChart({ gardenId, deviceId: propDeviceId }) {
   // Initialize chartData with empty structure so Line can render even before data arrives
   const [chartData, setChartData] = useState({ labels: [], datasets: [] });
   const [loading, setLoading] = useState(true);
@@ -136,8 +136,8 @@ function SensorChart({ gardenId }) {
 
       console.log('Fetching chart data for gardenId:', currentGardenId, 'date:', selectedDate);
 
-      // Lấy deviceId từ localStorage (được set khi user chọn thiết bị trên UI)
-      let deviceId = localStorage.getItem('deviceId');
+      // Ưu tiên sử dụng deviceId từ props, fallback sang localStorage
+      let deviceId = propDeviceId || localStorage.getItem('deviceId');
       
       // Nếu chưa có deviceId, lấy từ API
       if (!deviceId) {
@@ -157,6 +157,8 @@ function SensorChart({ gardenId }) {
           deviceId = '1'; // Fallback
         }
       }
+      
+      console.log('Loaded deviceId:', deviceId, 'for gardenId:', currentGardenId);
 
       // Check if selected date is in the future
       const today = new Date();
@@ -509,7 +511,7 @@ function SensorChart({ gardenId }) {
       setError('Không thể tải dữ liệu biểu đồ. Vui lòng thử lại sau.');
       setLoading(false);
     }
-  }, [gardenId, selectedDate]);
+  }, [gardenId, selectedDate, propDeviceId]);
 
   // Separate function to refresh only chart data (not affecting pump control)
   const refreshChartData = useCallback(async () => {
@@ -524,7 +526,8 @@ function SensorChart({ gardenId }) {
 
     try {
       // Don't set loading to true to avoid UI flicker
-      let deviceId = localStorage.getItem('deviceId');
+      // Ưu tiên sử dụng deviceId từ props, fallback sang localStorage
+      let deviceId = propDeviceId || localStorage.getItem('deviceId');
       
       if (!deviceId) {
         try {
@@ -540,6 +543,8 @@ function SensorChart({ gardenId }) {
           deviceId = '1';
         }
       }
+      
+      console.log('[Refresh] Fetching data for date:', selectedDate, 'deviceId:', deviceId);
 
       const today = new Date();
       const todayLocal = getLocalDateString(today);
@@ -729,7 +734,7 @@ function SensorChart({ gardenId }) {
       // Show user-friendly error message
       alert('Không thể làm mới đồ thị. Vui lòng thử lại sau.');
     }
-  }, [gardenId, selectedDate]);
+  }, [gardenId, selectedDate, propDeviceId]);
 
   useEffect(() => {
     fetchData();
@@ -748,23 +753,35 @@ function SensorChart({ gardenId }) {
     };
   }, [fetchData, refreshChartData, isToday]);
 
-  // Hàm điều khiển relay riêng biệt
+  // Hàm điều khiển relay (bật/tắt)
   const handleControlRelay = async (relayName) => {
+    const relayKey = relayName === 'V1' ? 'relay1' : 'relay2';
+    const isCurrentlyRunning = relayName === 'V1' ? isWateringRelay1 : isWateringRelay2;
+    
+    // Nếu đang chạy thì tắt, nếu đang tắt thì bật
+    if (isCurrentlyRunning) {
+      // Tắt bơm
+      await handleStopRelay(relayName);
+    } else {
+      // Bật bơm (bật liên tục, không có thời gian)
+      await handleStartRelay(relayName);
+    }
+  };
+  
+  // Hàm bật relay
+  const handleStartRelay = async (relayName) => {
     try {
       const relayKey = relayName === 'V1' ? 'relay1' : 'relay2';
-      const relayDuration = relayControl[relayKey].duration;
       
       if (relayName === 'V1') {
         setIsWateringRelay1(true);
-        setRemainingTime(prev => ({ ...prev, relay1: relayDuration }));
       } else if (relayName === 'V2') {
         setIsWateringRelay2(true);
-        setRemainingTime(prev => ({ ...prev, relay2: relayDuration }));
       }
       
       // Lấy deviceId từ gardenId
       const currentGardenId = gardenId || localStorage.getItem('gardenId');
-      let deviceId = localStorage.getItem('deviceId');
+      let deviceId = localStorage.getItem('deviceId') || propDeviceId;
       
       // Nếu chưa có deviceId, lấy từ API
       if (!deviceId && currentGardenId) {
@@ -783,68 +800,77 @@ function SensorChart({ gardenId }) {
         alert('Không tìm thấy thiết bị. Vui lòng kiểm tra cấu hình!');
         if (relayName === 'V1') {
           setIsWateringRelay1(false);
-          setRemainingTime(prev => ({ ...prev, relay1: 0 }));
         }
         if (relayName === 'V2') {
           setIsWateringRelay2(false);
-          setRemainingTime(prev => ({ ...prev, relay2: 0 }));
         }
         return;
       }
       
-      // Gửi request đến backend để điều khiển relay
+      // Gửi request đến backend để bật relay (duration = 9999 để bật liên tục)
       const response = await axios.post('/controlRelay', { 
         relay: relayName,
         deviceId: parseInt(deviceId),
-        duration: relayDuration,
-        mode: pumpMode
+        duration: 9999, // Bật liên tục
+        mode: pumpMode || 'MANUAL'
       });
       
       console.log(`Relay ${relayName} started:`, response.data);
-      
-      // Countdown timer
-      let timeLeft = relayDuration;
-      const countdownInterval = setInterval(() => {
-        timeLeft--;
-        if (relayName === 'V1') {
-          setRemainingTime(prev => ({ ...prev, relay1: timeLeft }));
-        } else {
-          setRemainingTime(prev => ({ ...prev, relay2: timeLeft }));
-        }
-        
-        if (timeLeft <= 0) {
-          clearInterval(countdownInterval);
-          if (relayName === 'V1') {
-            setIsWateringRelay1(false);
-            setRemainingTime(prev => ({ ...prev, relay1: 0 }));
-          } else {
-            setIsWateringRelay2(false);
-            setRemainingTime(prev => ({ ...prev, relay2: 0 }));
-          }
-        }
-      }, 1000);
-      
-      // Auto stop after specified duration (handled by backend)
-      setTimeout(() => {
-        clearInterval(countdownInterval);
-        if (relayName === 'V1') {
-          setIsWateringRelay1(false);
-          setRemainingTime(prev => ({ ...prev, relay1: 0 }));
-        } else {
-          setIsWateringRelay2(false);
-          setRemainingTime(prev => ({ ...prev, relay2: 0 }));
-        }
-      }, relayDuration * 1000);
     } catch (error) {
-      console.error(`Error controlling relay ${relayName}:`, error);
+      console.error(`Error starting relay ${relayName}:`, error);
+      if (relayName === 'V1') {
+        setIsWateringRelay1(false);
+      } else {
+        setIsWateringRelay2(false);
+      }
+      alert(`Không thể bật relay ${relayName}. Vui lòng kiểm tra kết nối!`);
+    }
+  };
+  
+  // Hàm tắt relay
+  const handleStopRelay = async (relayName) => {
+    try {
+      // Lấy deviceId từ gardenId
+      const currentGardenId = gardenId || localStorage.getItem('gardenId');
+      let deviceId = localStorage.getItem('deviceId') || propDeviceId;
+      
+      // Nếu chưa có deviceId, lấy từ API
+      if (!deviceId && currentGardenId) {
+        try {
+          const devicesRes = await axios.get(`/api/v1/devices/garden/${currentGardenId}`);
+          if (devicesRes.data && devicesRes.data.length > 0) {
+            deviceId = devicesRes.data[0].device_ID;
+            localStorage.setItem('deviceId', deviceId);
+          }
+        } catch (err) {
+          console.error('Error fetching devices:', err);
+        }
+      }
+      
+      if (!deviceId) {
+        alert('Không tìm thấy thiết bị. Vui lòng kiểm tra cấu hình!');
+        return;
+      }
+      
+      // Gửi request đến backend để tắt relay
+      const response = await axios.post('/stopRelay', {
+        relay: relayName,
+        deviceId: parseInt(deviceId)
+      });
+      
+      console.log(`Relay ${relayName} stopped:`, response.data);
+      
+      // Cập nhật trạng thái
       if (relayName === 'V1') {
         setIsWateringRelay1(false);
         setRemainingTime(prev => ({ ...prev, relay1: 0 }));
-      } else {
+      } else if (relayName === 'V2') {
         setIsWateringRelay2(false);
         setRemainingTime(prev => ({ ...prev, relay2: 0 }));
       }
-      alert(`Không thể điều khiển relay ${relayName}. Vui lòng kiểm tra kết nối!`);
+    } catch (error) {
+      console.error(`Error stopping relay ${relayName}:`, error);
+      alert(`Không thể tắt relay ${relayName}. Vui lòng thử lại!`);
     }
   };
   
@@ -894,137 +920,46 @@ function SensorChart({ gardenId }) {
             </div>
             <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
               isWateringRelay1
-                ? 'bg-blue-500 text-white'
+                ? 'bg-green-500 text-white'
                 : 'bg-gray-200 text-gray-600'
             }`}>
               {isWateringRelay1 ? 'ĐANG CHẠY' : 'CHỜ'}
             </span>
           </div>
 
-          {isWateringRelay1 ? (
-            <>
-              <p className="text-sm text-gray-600 mb-4">Đang tưới...</p>
-              {/* Progress Bar */}
-              <div className="mb-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="w-full bg-gray-200 rounded-full h-2.5 mr-2">
-                    <div
-                      className="bg-blue-500 h-2.5 rounded-full transition-all duration-1000"
-                      style={{
-                        width: `${((relayControl.relay1.duration - remainingTime.relay1) / relayControl.relay1.duration) * 100}%`
-                      }}
-                    ></div>
-                  </div>
-                  <span className="text-sm font-medium text-gray-700 whitespace-nowrap">
-                    Còn {formatTime(remainingTime.relay1)}
-                  </span>
-                </div>
-              </div>
-              {/* Duration Settings */}
-              <div className="mb-4">
-                <label className="block text-xs font-medium text-gray-600 mb-2">Cài đặt thời lượng</label>
-                <div className="flex gap-2">
-                  {quickPresets.map(preset => (
-                    <button
-                      key={preset}
-                      disabled
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                        relayControl.relay1.duration === preset
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-white text-gray-600 border border-gray-300'
-                      } cursor-not-allowed opacity-60`}
-                    >
-                      {preset}s
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {/* Active Button */}
-              <button
-                disabled
-                className="w-full py-3 bg-gray-300 text-gray-600 rounded-lg font-medium flex items-center justify-center gap-2 cursor-not-allowed"
-              >
-                <svg className="w-5 h-5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 0H15" />
-                </svg>
-                Bơm đang hoạt động
-              </button>
-            </>
-          ) : (
-            <>
-              {/* Duration Input */}
-              <div className="mb-4">
-                <label className="block text-xs font-medium text-gray-600 mb-2">Thời lượng</label>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleDurationChange('relay1', -1)}
-                    disabled={relayControl.relay1.duration <= 1}
-                    className="w-10 h-10 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <span className="text-gray-600 font-semibold">−</span>
-                  </button>
-                  <input
-                    type="number"
-                    min="1"
-                    max="120"
-                    value={relayControl.relay1.duration}
-                    onChange={(e) => {
-                      const value = Math.min(Math.max(parseInt(e.target.value) || 1, 1), 120);
-                      setRelayControl(prev => ({
-                        ...prev,
-                        relay1: { ...prev.relay1, duration: value }
-                      }));
-                    }}
-                    className="w-20 px-3 py-2 text-center border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                  />
-                  <span className="text-sm text-gray-600">giây</span>
-                  <button
-                    onClick={() => handleDurationChange('relay1', 1)}
-                    disabled={relayControl.relay1.duration >= 120}
-                    className="w-10 h-10 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <span className="text-gray-600 font-semibold">+</span>
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Tối đa: 120s</p>
-              </div>
-              {/* Quick Presets */}
-              <div className="mb-4">
-                <label className="block text-xs font-medium text-gray-600 mb-2">Nhanh</label>
-                <div className="flex gap-2">
-                  {quickPresets.map(preset => (
-                    <button
-                      key={preset}
-                      onClick={() => handlePresetSelect('relay1', preset)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                        relayControl.relay1.duration === preset
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-white text-gray-600 border border-gray-300 hover:border-blue-300'
-                      }`}
-                    >
-                      {preset}s
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {/* Activate Button */}
-              <button
-                onClick={() => handleControlRelay('V1')}
-                disabled={isWateringRelay1}
-                className={`w-full py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-all ${
-                  isWateringRelay1
-                    ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-                    : 'bg-blue-500 text-white hover:bg-blue-600 active:scale-95 shadow-md hover:shadow-lg'
-                }`}
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Kích hoạt Bơm 1
-              </button>
-            </>
-          )}
+          {/* Control Buttons */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleStartRelay('V1')}
+              disabled={isWateringRelay1}
+              className={`flex-1 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-all ${
+                isWateringRelay1
+                  ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                  : 'bg-green-500 text-white hover:bg-green-600 active:scale-95 shadow-md hover:shadow-lg'
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Bật
+            </button>
+            <button
+              onClick={() => handleStopRelay('V1')}
+              disabled={!isWateringRelay1}
+              className={`flex-1 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-all ${
+                !isWateringRelay1
+                  ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                  : 'bg-red-500 text-white hover:bg-red-600 active:scale-95 shadow-md hover:shadow-lg'
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10h6v4H9z" />
+              </svg>
+              Tắt
+            </button>
+          </div>
         </div>
 
         {/* Pump 2 (V2) Card */}
@@ -1036,137 +971,46 @@ function SensorChart({ gardenId }) {
             </div>
             <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
               isWateringRelay2
-                ? 'bg-blue-500 text-white'
+                ? 'bg-green-500 text-white'
                 : 'bg-gray-200 text-gray-600'
             }`}>
               {isWateringRelay2 ? 'ĐANG CHẠY' : 'CHỜ'}
             </span>
           </div>
 
-          {isWateringRelay2 ? (
-            <>
-              <p className="text-sm text-gray-600 mb-4">Đang tưới...</p>
-              {/* Progress Bar */}
-              <div className="mb-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="w-full bg-gray-200 rounded-full h-2.5 mr-2">
-                    <div
-                      className="bg-blue-500 h-2.5 rounded-full transition-all duration-1000"
-                      style={{
-                        width: `${((relayControl.relay2.duration - remainingTime.relay2) / relayControl.relay2.duration) * 100}%`
-                      }}
-                    ></div>
-                  </div>
-                  <span className="text-sm font-medium text-gray-700 whitespace-nowrap">
-                    Còn {formatTime(remainingTime.relay2)}
-                  </span>
-                </div>
-              </div>
-              {/* Duration Settings */}
-              <div className="mb-4">
-                <label className="block text-xs font-medium text-gray-600 mb-2">Cài đặt thời lượng</label>
-                <div className="flex gap-2">
-                  {quickPresets.map(preset => (
-                    <button
-                      key={preset}
-                      disabled
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                        relayControl.relay2.duration === preset
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-white text-gray-600 border border-gray-300'
-                      } cursor-not-allowed opacity-60`}
-                    >
-                      {preset}s
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {/* Active Button */}
-              <button
-                disabled
-                className="w-full py-3 bg-gray-300 text-gray-600 rounded-lg font-medium flex items-center justify-center gap-2 cursor-not-allowed"
-              >
-                <svg className="w-5 h-5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 0H15" />
-                </svg>
-                Bơm đang hoạt động
-              </button>
-            </>
-          ) : (
-            <>
-              {/* Duration Input */}
-              <div className="mb-4">
-                <label className="block text-xs font-medium text-gray-600 mb-2">Thời lượng</label>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleDurationChange('relay2', -1)}
-                    disabled={relayControl.relay2.duration <= 1}
-                    className="w-10 h-10 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <span className="text-gray-600 font-semibold">−</span>
-                  </button>
-                  <input
-                    type="number"
-                    min="1"
-                    max="120"
-                    value={relayControl.relay2.duration}
-                    onChange={(e) => {
-                      const value = Math.min(Math.max(parseInt(e.target.value) || 1, 1), 120);
-                      setRelayControl(prev => ({
-                        ...prev,
-                        relay2: { ...prev.relay2, duration: value }
-                      }));
-                    }}
-                    className="w-20 px-3 py-2 text-center border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                  />
-                  <span className="text-sm text-gray-600">giây</span>
-                  <button
-                    onClick={() => handleDurationChange('relay2', 1)}
-                    disabled={relayControl.relay2.duration >= 120}
-                    className="w-10 h-10 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <span className="text-gray-600 font-semibold">+</span>
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Tối đa: 120s</p>
-              </div>
-              {/* Quick Presets */}
-              <div className="mb-4">
-                <label className="block text-xs font-medium text-gray-600 mb-2">Nhanh</label>
-                <div className="flex gap-2">
-                  {quickPresets.map(preset => (
-                    <button
-                      key={preset}
-                      onClick={() => handlePresetSelect('relay2', preset)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                        relayControl.relay2.duration === preset
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-white text-gray-600 border border-gray-300 hover:border-blue-300'
-                      }`}
-                    >
-                      {preset}s
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {/* Activate Button */}
-              <button
-                onClick={() => handleControlRelay('V2')}
-                disabled={isWateringRelay2}
-                className={`w-full py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-all ${
-                  isWateringRelay2
-                    ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-                    : 'bg-blue-500 text-white hover:bg-blue-600 active:scale-95 shadow-md hover:shadow-lg'
-                }`}
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Kích hoạt Bơm 2
-              </button>
-            </>
-          )}
+          {/* Control Buttons */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleStartRelay('V2')}
+              disabled={isWateringRelay2}
+              className={`flex-1 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-all ${
+                isWateringRelay2
+                  ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                  : 'bg-green-500 text-white hover:bg-green-600 active:scale-95 shadow-md hover:shadow-lg'
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Bật
+            </button>
+            <button
+              onClick={() => handleStopRelay('V2')}
+              disabled={!isWateringRelay2}
+              className={`flex-1 py-3 rounded-lg font-medium flex items-center justify-center gap-2 transition-all ${
+                !isWateringRelay2
+                  ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                  : 'bg-red-500 text-white hover:bg-red-600 active:scale-95 shadow-md hover:shadow-lg'
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10h6v4H9z" />
+              </svg>
+              Tắt
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1411,9 +1255,6 @@ function SensorChart({ gardenId }) {
             Thử lại
           </button>
         </div>
-
-        {/* Pump Control Section - Always visible */}
-        {renderPumpControl()}
       </div>
     );
   }
@@ -1487,9 +1328,6 @@ function SensorChart({ gardenId }) {
             </button>
           )}
         </div>
-
-        {/* Pump Control Section - Always visible */}
-        {renderPumpControl()}
       </div>
     );
   }
@@ -1579,9 +1417,6 @@ function SensorChart({ gardenId }) {
       <div className="h-80 mb-4">
         {chartData && <Line data={chartData} options={options} />}
       </div>
-
-      {/* Pump Control Section - Separate Card like Chart */}
-      {renderPumpControl()}
 
     </div>
   );

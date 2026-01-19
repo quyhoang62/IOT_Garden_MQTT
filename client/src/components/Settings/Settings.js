@@ -2,9 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Link, useLocation } from 'react-router-dom';
 import { 
-  HiOutlineUser, 
   HiOutlineBell, 
-  HiOutlineCog,
   HiOutlineDeviceMobile,
   HiOutlineMail,
   HiOutlinePlus,
@@ -13,18 +11,7 @@ import {
 
 function Settings() {
   const location = useLocation();
-  const [activeTab, setActiveTab] = useState('account');
-  const [user, setUser] = useState({
-    user_ID: null,
-    user_Name: '',
-    user_Email: '',
-    user_Phone: '',
-    user_Address: ''
-  });
-  const [passwords, setPasswords] = useState({
-    current: '',
-    new: ''
-  });
+  const [activeTab, setActiveTab] = useState('notifications');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
   
@@ -50,41 +37,12 @@ function Settings() {
     device_Description: ''
   });
   
-  // Language state
-  const [language, setLanguage] = useState(localStorage.getItem('language') || 'vi');
-
   const menuItems = [
-    { id: 'account', name: 'Tài khoản', icon: HiOutlineUser },
     { id: 'notifications', name: 'Thông báo', icon: HiOutlineBell },
-    { id: 'general', name: 'Cài đặt chung', icon: HiOutlineCog },
     { id: 'devices', name: 'Quản lý thiết bị', icon: HiOutlineDeviceMobile },
   ];
 
   useEffect(() => {
-    const fetchUser = async () => {
-      try {
-        const token = localStorage.getItem('token');
-        const userId = localStorage.getItem('userId');
-        
-        // Lấy thông tin user từ API
-        const response = await axios.get(`/api/v1/users/${userId}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        
-        if (response.data.user) {
-          setUser({
-            user_ID: response.data.user.user_ID,
-            user_Name: response.data.user.user_Name || '',
-            user_Email: response.data.user.user_Email || '',
-            user_Phone: response.data.user.user_Phone || '',
-            user_Address: response.data.user.user_Address || ''
-          });
-        }
-      } catch (error) {
-        console.error('Error fetching user:', error);
-      }
-    };
-    
     const fetchNotificationSettings = async () => {
       try {
         const token = localStorage.getItem('token');
@@ -104,7 +62,6 @@ function Settings() {
       }
     };
     
-    fetchUser();
     fetchNotificationSettings();
     fetchDevices();
   }, []);
@@ -167,16 +124,6 @@ function Settings() {
     }
   };
   
-  // Handle language change
-  const handleLanguageChange = (e) => {
-    const newLang = e.target.value;
-    setLanguage(newLang);
-    localStorage.setItem('language', newLang);
-    
-    // Reload page to apply language change
-    // Hoặc có thể dùng context để update toàn bộ app
-    window.location.reload();
-  };
 
   // Save notification settings
   const handleSaveNotificationSettings = async () => {
@@ -233,37 +180,6 @@ function Settings() {
     }));
   };
 
-  const handleSaveChanges = async () => {
-    if (!user.user_ID) {
-      setMessage({ type: 'error', text: 'Không tìm thấy thông tin người dùng' });
-      return;
-    }
-
-    setLoading(true);
-    setMessage({ type: '', text: '' });
-    
-    try {
-      const token = localStorage.getItem('token');
-      
-      // Cập nhật thông tin user
-      await axios.put(`/api/v1/users/${user.user_ID}`, {
-        user_Name: user.user_Name,
-        user_Email: user.user_Email,
-        user_Phone: user.user_Phone,
-        user_Address: user.user_Address
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      setMessage({ type: 'success', text: 'Đã lưu thay đổi thành công!' });
-    } catch (error) {
-      console.error('Error updating user:', error);
-      const errorMsg = error.response?.data?.error || 'Có lỗi xảy ra. Vui lòng thử lại.';
-      setMessage({ type: 'error', text: errorMsg });
-    } finally {
-      setLoading(false);
-    }
-  };
 
 
   return (
@@ -271,7 +187,7 @@ function Settings() {
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-800 mb-2">Cài đặt</h1>
-        <p className="text-gray-500">Quản lý thông tin tài khoản, thông báo, và các thiết bị của bạn.</p>
+        <p className="text-gray-500">Quản lý thông báo và các thiết bị của bạn.</p>
       </div>
 
       <div className="flex gap-8">
@@ -300,111 +216,6 @@ function Settings() {
 
         {/* Settings Content */}
         <div className="flex-1">
-          {activeTab === 'account' && (
-            <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-100">
-              {/* Message */}
-              {message.text && (
-                <div className={`mb-6 p-4 rounded-xl ${
-                  message.type === 'success' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'
-                }`}>
-                  {message.text}
-                </div>
-              )}
-
-              {/* Personal Info Section */}
-              <div className="mb-8">
-                <h3 className="text-lg font-semibold text-gray-800 mb-6">Thông tin cá nhân</h3>
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-600 mb-2">Họ và Tên</label>
-                    <input
-                      type="text"
-                      value={user.user_Name}
-                      onChange={(e) => setUser(prev => ({ ...prev, user_Name: e.target.value }))}
-                      placeholder="Nhập họ và tên"
-                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-600 mb-2">Email</label>
-                    <input
-                      type="email"
-                      value={user.user_Email}
-                      onChange={(e) => setUser(prev => ({ ...prev, user_Email: e.target.value }))}
-                      placeholder="Nhập email"
-                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-600 mb-2">Số điện thoại</label>
-                    <input
-                      type="tel"
-                      value={user.user_Phone}
-                      onChange={(e) => setUser(prev => ({ ...prev, user_Phone: e.target.value }))}
-                      placeholder="Nhập số điện thoại"
-                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-600 mb-2">Địa chỉ</label>
-                    <input
-                      type="text"
-                      value={user.user_Address}
-                      onChange={(e) => setUser(prev => ({ ...prev, user_Address: e.target.value }))}
-                      placeholder="Nhập địa chỉ"
-                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Password Section */}
-              <div className="mb-8">
-                <h3 className="text-lg font-semibold text-gray-800 mb-6">Mật khẩu</h3>
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-600 mb-2">Mật khẩu hiện tại</label>
-                    <input
-                      type="password"
-                      value={passwords.current}
-                      onChange={(e) => setPasswords(prev => ({ ...prev, current: e.target.value }))}
-                      placeholder="••••••••"
-                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-600 mb-2">Mật khẩu mới</label>
-                    <input
-                      type="password"
-                      value={passwords.new}
-                      onChange={(e) => setPasswords(prev => ({ ...prev, new: e.target.value }))}
-                      placeholder="••••••••"
-                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all"
-                    />
-                  </div>
-                </div>
-              </div>
-
-
-              {/* Action Buttons */}
-              <div className="flex justify-end gap-4">
-                <button
-                  onClick={() => window.location.reload()}
-                  className="px-6 py-3 text-gray-600 hover:bg-gray-100 rounded-xl font-medium transition-all"
-                >
-                  Hủy
-                </button>
-                <button
-                  onClick={handleSaveChanges}
-                  disabled={loading}
-                  className="px-6 py-3 bg-green-500 text-white rounded-xl font-medium hover:bg-green-600 transition-all disabled:bg-gray-300"
-                >
-                  {loading ? 'Đang lưu...' : 'Lưu thay đổi'}
-                </button>
-              </div>
-            </div>
-          )}
-
           {activeTab === 'notifications' && (
             <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-100">
               {/* Message */}
@@ -484,28 +295,6 @@ function Settings() {
                 >
                   {loading ? 'Đang lưu...' : 'Lưu cài đặt thông báo'}
                 </button>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'general' && (
-            <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-100">
-              <h3 className="text-lg font-semibold text-gray-800 mb-6">Cài đặt chung</h3>
-              <div className="space-y-6">
-                <div>
-                  <label className="block text-sm font-medium text-gray-600 mb-2">Ngôn ngữ</label>
-                  <select 
-                    value={language}
-                    onChange={handleLanguageChange}
-                    className="w-full max-w-xs px-4 py-3 rounded-xl border border-gray-200 focus:border-green-500 outline-none"
-                  >
-                    <option value="vi">Tiếng Việt</option>
-                    <option value="en">English</option>
-                  </select>
-                  <p className="text-xs text-gray-500 mt-2">
-                    Thay đổi ngôn ngữ sẽ làm mới trang để áp dụng
-                  </p>
-                </div>
               </div>
             </div>
           )}
