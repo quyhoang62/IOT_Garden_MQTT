@@ -6,8 +6,25 @@ import {
   HiOutlineDeviceMobile,
   HiOutlineMail,
   HiOutlinePlus,
-  HiOutlineTrash
+  HiOutlineTrash,
+  HiOutlineShare
 } from 'react-icons/hi';
+import { 
+  HiSave,
+  HiCheckCircle
+} from 'react-icons/hi';
+import { 
+  FaThermometerHalf,
+  FaTint,
+  FaLeaf,
+  FaWifi,
+  FaCalendarAlt,
+  FaSnowflake,
+  FaSun,
+  FaArrowDown,
+  FaArrowUp,
+  FaPaperPlane
+} from 'react-icons/fa';
 
 function Settings() {
   const location = useLocation();
@@ -21,10 +38,23 @@ function Settings() {
     email_temperature: true,
     email_humidity: true,
     email_soil_moisture: true,
-    email_daily_report: false,
+    email_daily_report: true,
     notification_email: ''
   });
   const [sendingTestEmail, setSendingTestEmail] = useState(false);
+  
+  // Threshold settings state
+  const [thresholds, setThresholds] = useState({
+    temperature: { min: null, max: null, enabled: true },
+    humidity: { min: null, max: null, enabled: true },
+    soilMoisture: { min: null, max: null, enabled: true }
+  });
+  
+  // System health state
+  const [systemHealth, setSystemHealth] = useState({
+    connectionStatus: false,
+    dailyReport: true
+  });
   
   // Device management state
   const [devices, setDevices] = useState([]);
@@ -38,8 +68,9 @@ function Settings() {
   });
   
   const menuItems = [
-    { id: 'notifications', name: 'Thông báo', icon: HiOutlineBell },
-    { id: 'devices', name: 'Quản lý thiết bị', icon: HiOutlineDeviceMobile },
+    { id: 'notifications', name: 'Thông báo & Ngưỡng', icon: HiOutlineBell },
+    { id: 'devices', name: 'Thiết bị', icon: HiOutlineDeviceMobile },
+    { id: 'permissions', name: 'Phân quyền', icon: HiOutlineShare },
   ];
 
   useEffect(() => {
@@ -57,6 +88,12 @@ function Settings() {
           email_daily_report: response.data.email_daily_report || false,
           notification_email: response.data.notification_email || ''
         });
+        
+        // Update system health from notification settings
+        setSystemHealth(prev => ({
+          ...prev,
+          dailyReport: response.data.email_daily_report || false
+        }));
       } catch (error) {
         console.error('Error fetching notification settings:', error);
       }
@@ -132,10 +169,21 @@ function Settings() {
     
     try {
       const token = localStorage.getItem('token');
-      await axios.put('/api/v1/notifications/settings', notificationSettings, {
+      
+      // Save notification settings (including daily report from system health)
+      const settingsToSave = {
+        ...notificationSettings,
+        email_daily_report: systemHealth.dailyReport
+      };
+      
+      await axios.put('/api/v1/notifications/settings', settingsToSave, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setMessage({ type: 'success', text: 'Đã lưu cài đặt thông báo thành công!' });
+      
+      // TODO: Save thresholds to threshold API when available
+      // For now, thresholds are stored in local state
+      
+      setMessage({ type: 'success', text: 'Đã lưu cài đặt thành công!' });
     } catch (error) {
       setMessage({ type: 'error', text: 'Có lỗi xảy ra khi lưu cài đặt. Vui lòng thử lại.' });
     } finally {
@@ -183,17 +231,17 @@ function Settings() {
 
 
   return (
-    <div className="p-8">
+    <div className="p-8 min-h-screen bg-gray-50">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-800 mb-2">Cài đặt</h1>
-        <p className="text-gray-500">Quản lý thông báo và các thiết bị của bạn.</p>
+        <h1 className="text-3xl font-bold text-gray-800 mb-2">Cài đặt hệ thống</h1>
+        <p className="text-gray-600">Quản lý các thông số môi trường và ngưỡng cảnh báo an toàn.</p>
       </div>
 
       <div className="flex gap-8">
         {/* Settings Sidebar */}
         <div className="w-64 flex-shrink-0">
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="bg-gray-50 rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
             {menuItems.map((item) => {
               const Icon = item.icon;
               return (
@@ -202,11 +250,11 @@ function Settings() {
                   onClick={() => setActiveTab(item.id)}
                   className={`w-full flex items-center gap-3 px-6 py-4 transition-all duration-200 ${
                     activeTab === item.id
-                      ? 'bg-green-50 text-green-600 border-l-4 border-green-500'
-                      : 'text-gray-600 hover:bg-gray-50 border-l-4 border-transparent'
+                      ? 'bg-green-50 text-gray-800'
+                      : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  <Icon className="w-5 h-5" />
+                  <Icon className={`w-5 h-5 ${activeTab === item.id ? 'text-green-600' : 'text-gray-500'}`} />
                   <span className="font-medium">{item.name}</span>
                 </button>
               );
@@ -217,84 +265,285 @@ function Settings() {
         {/* Settings Content */}
         <div className="flex-1">
           {activeTab === 'notifications' && (
-            <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-100">
+            <div className="space-y-8">
               {/* Message */}
               {message.text && (
-                <div className={`mb-6 p-4 rounded-xl ${
+                <div className={`p-4 rounded-xl ${
                   message.type === 'success' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'
                 }`}>
                   {message.text}
                 </div>
               )}
 
-              <h3 className="text-lg font-semibold text-gray-800 mb-6">Cài đặt thông báo qua Email</h3>
-              
-              {/* Email Input */}
-              <div className="mb-6 p-4 bg-blue-50 rounded-xl border border-blue-100">
-                <div className="flex items-center gap-2 mb-3">
-                  <HiOutlineMail className="w-5 h-5 text-blue-500" />
-                  <h4 className="font-medium text-gray-800">Email nhận thông báo</h4>
+              {/* Kênh thông báo Section */}
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-1 h-6 bg-green-500 rounded"></div>
+                  <h2 className="text-xl font-semibold text-gray-800">Kênh thông báo</h2>
                 </div>
-                <div className="flex gap-3">
-                  <input
-                    type="email"
-                    value={notificationSettings.notification_email}
-                    onChange={(e) => setNotificationSettings(prev => ({
-                      ...prev,
-                      notification_email: e.target.value
-                    }))}
-                    placeholder="example@gmail.com"
-                    className="flex-1 px-4 py-2 rounded-lg border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-                  />
-                  <button
-                    onClick={handleSendTestEmail}
-                    disabled={sendingTestEmail}
-                    className="px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:bg-gray-300"
-                  >
-                    {sendingTestEmail ? 'Đang gửi...' : 'Gửi test'}
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-2">
-                  Nhập email để nhận thông báo cảnh báo từ hệ thống IOT Garden
-                </p>
-              </div>
-
-              <div className="space-y-4">
-                {[
-                  { key: 'email_watering', name: 'Thông báo tưới nước', desc: 'Nhận thông báo qua email khi hệ thống tưới nước' },
-                  { key: 'email_temperature', name: 'Cảnh báo nhiệt độ', desc: 'Nhận cảnh báo qua email khi nhiệt độ vượt ngưỡng' },
-                  { key: 'email_humidity', name: 'Cảnh báo độ ẩm không khí', desc: 'Nhận cảnh báo qua email khi độ ẩm không khí bất thường' },
-                  { key: 'email_soil_moisture', name: 'Cảnh báo độ ẩm đất', desc: 'Nhận cảnh báo qua email khi độ ẩm đất quá thấp' },
-                  { key: 'email_daily_report', name: 'Báo cáo hàng ngày', desc: 'Nhận báo cáo tổng hợp mỗi ngày qua email' },
-                ].map((item) => (
-                  <div key={item.key} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
-                    <div>
-                      <h4 className="font-medium text-gray-800">{item.name}</h4>
-                      <p className="text-sm text-gray-500">{item.desc}</p>
+                <div className="bg-gray-50 rounded-2xl p-6 border border-gray-200">
+                  <div className="flex items-start gap-4">
+                    <div className="p-3 bg-blue-100 rounded-xl">
+                      <HiOutlineMail className="w-6 h-6 text-blue-600" />
                     </div>
-                    <button
-                      onClick={() => toggleNotification(item.key)}
-                      className={`relative w-12 h-6 rounded-full transition-colors ${
-                        notificationSettings[item.key] ? 'bg-green-500' : 'bg-gray-300'
-                      }`}
-                    >
-                      <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${
-                        notificationSettings[item.key] ? 'right-0.5' : 'left-0.5'
-                      }`} />
-                    </button>
+                    <div className="flex-1">
+                      <h3 className="text-lg font-semibold text-gray-800 mb-1">Email cảnh báo</h3>
+                      <p className="text-sm text-gray-600 mb-4">
+                        Địa chỉ nhận thông báo khẩn cấp khi cảm biến vượt ngưỡng.
+                      </p>
+                      <div className="flex gap-3">
+                        <input
+                          type="email"
+                          value={notificationSettings.notification_email}
+                          onChange={(e) => setNotificationSettings(prev => ({
+                            ...prev,
+                            notification_email: e.target.value
+                          }))}
+                          placeholder="@user@email.com"
+                          className="flex-1 px-4 py-2 bg-white rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all text-gray-700"
+                        />
+                        <button
+                          onClick={handleSendTestEmail}
+                          disabled={sendingTestEmail}
+                          className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg font-medium hover:bg-gray-300 transition-colors disabled:bg-gray-300 flex items-center gap-2"
+                        >
+                          <FaPaperPlane className="w-4 h-4" />
+                          {sendingTestEmail ? 'Đang gửi...' : 'Gửi thử'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                ))}
+                </div>
               </div>
 
-              {/* Save Button */}
-              <div className="mt-6 flex justify-end">
-                <button
-                  onClick={handleSaveNotificationSettings}
-                  disabled={loading}
-                  className="px-6 py-3 bg-green-500 text-white rounded-xl font-medium hover:bg-green-600 transition-all disabled:bg-gray-300"
-                >
-                  {loading ? 'Đang lưu...' : 'Lưu cài đặt thông báo'}
-                </button>
+              {/* Ngưỡng an toàn Section */}
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-1 h-6 bg-green-500 rounded"></div>
+                  <h2 className="text-xl font-semibold text-gray-800">Ngưỡng an toàn</h2>
+                </div>
+                <div className="grid grid-cols-3 gap-4">
+                  {/* Temperature Card */}
+                  <div className="bg-gray-50 rounded-2xl p-5 border border-gray-300 relative">
+                    <div className="absolute top-4 right-4">
+                      <div className="w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center">
+                        <HiCheckCircle className="w-4 h-4 text-white" />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 mb-3">
+                      <FaThermometerHalf className="w-6 h-6 text-orange-500" />
+                      <h3 className="text-lg font-semibold text-gray-800">Nhiệt độ</h3>
+                    </div>
+                    <p className="text-sm text-gray-600 mb-4">Giám sát nhiệt độ vườn</p>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <FaSnowflake className="w-4 h-4 text-blue-500" />
+                          <span className="text-sm font-medium text-gray-700">Thấp nhất</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            value={thresholds.temperature.min || ''}
+                            onChange={(e) => setThresholds(prev => ({
+                              ...prev,
+                              temperature: { ...prev.temperature, min: e.target.value ? parseFloat(e.target.value) : null }
+                            }))}
+                            placeholder="0"
+                            className="flex-1 px-3 py-2 bg-white rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-sm"
+                          />
+                          <span className="text-sm text-gray-600">°C</span>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <FaSun className="w-4 h-4 text-orange-500" />
+                          <span className="text-sm font-medium text-gray-700">Cao nhất</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            value={thresholds.temperature.max || ''}
+                            onChange={(e) => setThresholds(prev => ({
+                              ...prev,
+                              temperature: { ...prev.temperature, max: e.target.value ? parseFloat(e.target.value) : null }
+                            }))}
+                            placeholder="0"
+                            className="flex-1 px-3 py-2 bg-white rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-sm"
+                          />
+                          <span className="text-sm text-gray-600">°C</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Humidity Card */}
+                  <div className="bg-gray-50 rounded-2xl p-5 border border-gray-300 relative">
+                    <div className="absolute top-4 right-4">
+                      <div className="w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center">
+                        <HiCheckCircle className="w-4 h-4 text-white" />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 mb-3">
+                      <FaTint className="w-6 h-6 text-blue-500" />
+                      <h3 className="text-lg font-semibold text-gray-800">Độ ẩm không khí</h3>
+                    </div>
+                    <p className="text-sm text-gray-600 mb-4">Giám sát độ ẩm môi trường</p>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <FaArrowDown className="w-4 h-4 text-blue-500" />
+                          <span className="text-sm font-medium text-gray-700">Thấp nhất</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            value={thresholds.humidity.min || ''}
+                            onChange={(e) => setThresholds(prev => ({
+                              ...prev,
+                              humidity: { ...prev.humidity, min: e.target.value ? parseFloat(e.target.value) : null }
+                            }))}
+                            placeholder="0"
+                            className="flex-1 px-3 py-2 bg-white rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-sm"
+                          />
+                          <span className="text-sm text-gray-600">%</span>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <FaArrowUp className="w-4 h-4 text-blue-500" />
+                          <span className="text-sm font-medium text-gray-700">Cao nhất</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            value={thresholds.humidity.max || ''}
+                            onChange={(e) => setThresholds(prev => ({
+                              ...prev,
+                              humidity: { ...prev.humidity, max: e.target.value ? parseFloat(e.target.value) : null }
+                            }))}
+                            placeholder="0"
+                            className="flex-1 px-3 py-2 bg-white rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-sm"
+                          />
+                          <span className="text-sm text-gray-600">%</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Soil Moisture Card */}
+                  <div className="bg-gray-50 rounded-2xl p-5 border border-gray-300 relative">
+                    <div className="absolute top-4 right-4">
+                      <div className="w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center">
+                        <HiCheckCircle className="w-4 h-4 text-white" />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 mb-3">
+                      <FaLeaf className="w-6 h-6 text-green-500" />
+                      <h3 className="text-lg font-semibold text-gray-800">Độ ẩm đất</h3>
+                    </div>
+                    <p className="text-sm text-gray-600 mb-4">Giám sát nước trong đất</p>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <FaArrowDown className="w-4 h-4 text-blue-500" />
+                          <span className="text-sm font-medium text-gray-700">Thấp nhất</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            value={thresholds.soilMoisture.min || ''}
+                            onChange={(e) => setThresholds(prev => ({
+                              ...prev,
+                              soilMoisture: { ...prev.soilMoisture, min: e.target.value ? parseFloat(e.target.value) : null }
+                            }))}
+                            placeholder="0"
+                            className="flex-1 px-3 py-2 bg-white rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-sm"
+                          />
+                          <span className="text-sm text-gray-600">%</span>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <FaArrowUp className="w-4 h-4 text-blue-500" />
+                          <span className="text-sm font-medium text-gray-700">Cao nhất</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            value={thresholds.soilMoisture.max || ''}
+                            onChange={(e) => setThresholds(prev => ({
+                              ...prev,
+                              soilMoisture: { ...prev.soilMoisture, max: e.target.value ? parseFloat(e.target.value) : null }
+                            }))}
+                            placeholder="0"
+                            className="flex-1 px-3 py-2 bg-white rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-sm"
+                          />
+                          <span className="text-sm text-gray-600">%</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sức khỏe hệ thống Section */}
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-1 h-6 bg-green-500 rounded"></div>
+                  <h2 className="text-xl font-semibold text-gray-800">Sức khỏe hệ thống</h2>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Connection Status Card */}
+                  <div className="bg-gray-50 rounded-2xl p-5 border border-gray-200">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-start gap-4">
+                        <div className="p-3 bg-red-100 rounded-xl">
+                          <FaWifi className="w-6 h-6 text-red-500" />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-semibold text-gray-800 mb-1">Trạng thái kết nối</h3>
+                          <p className="text-sm text-gray-600">Cảnh báo mất kết nối</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setSystemHealth(prev => ({ ...prev, connectionStatus: !prev.connectionStatus }))}
+                        className={`relative w-12 h-6 rounded-full transition-colors ${
+                          systemHealth.connectionStatus ? 'bg-green-500' : 'bg-gray-300'
+                        }`}
+                      >
+                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${
+                          systemHealth.connectionStatus ? 'right-0.5' : 'left-0.5'
+                        }`} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Daily Report Card */}
+                  <div className="bg-gray-50 rounded-2xl p-5 border border-gray-200">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-start gap-4">
+                        <div className="p-3 bg-purple-100 rounded-xl">
+                          <FaCalendarAlt className="w-6 h-6 text-purple-500" />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-semibold text-gray-800 mb-1">Báo cáo hàng ngày</h3>
+                          <p className="text-sm text-gray-600">Tổng hợp 24h qua email</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setSystemHealth(prev => ({ ...prev, dailyReport: !prev.dailyReport }))}
+                        className={`relative w-12 h-6 rounded-full transition-colors ${
+                          systemHealth.dailyReport ? 'bg-green-500' : 'bg-gray-300'
+                        }`}
+                      >
+                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${
+                          systemHealth.dailyReport ? 'right-0.5' : 'left-0.5'
+                        }`} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -434,8 +683,29 @@ function Settings() {
               </div>
             </div>
           )}
+
+          {activeTab === 'permissions' && (
+            <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-100">
+              <h3 className="text-lg font-semibold text-gray-800 mb-4">Phân quyền</h3>
+              <p className="text-gray-500">Tính năng đang được phát triển...</p>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Floating Save Button */}
+      {activeTab === 'notifications' && (
+        <div className="fixed bottom-8 right-8 z-50">
+          <button
+            onClick={handleSaveNotificationSettings}
+            disabled={loading}
+            className="px-6 py-3 bg-green-500 text-white rounded-xl font-medium hover:bg-green-600 transition-all disabled:bg-gray-300 shadow-lg flex items-center gap-2"
+          >
+            <HiSave className="w-5 h-5" />
+            {loading ? 'Đang lưu...' : 'Lưu thay đổi'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
